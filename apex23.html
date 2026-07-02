@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>APEX — Coach Performance</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #08080E; color: #E8E8F0; font-family: Inter, system-ui, sans-serif; min-height: 100vh; }
+    button { font-family: inherit; cursor: pointer; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 2px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+  </style>
+</head>
+<body>
+<div id="root">
+  <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px">
+    <div style="width:40px;height:40px;border:3px solid #7C3AED;border-top-color:#00D4FF;border-radius:50%;animation:spin 0.8s linear infinite"></div>
+    <div style="color:#8888AA;font-size:14px">Chargement APEX…</div>
+  </div>
+</div>
+<script>
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxzcjnZQyhtOpsO3jWZffwQHYBdvDI5Qi3USN4UhMJNMwpl2T6DyvNDFVFFuVCUOZFP5g/exec";
+// Clé API gérée côté serveur (Apps Script)
+
+const C = {
+  bg:"#1C1E26", surface:"#262833", card:"#2C2E3A", border:"#383A48",
+  cyan:"#7DD3E8", purple:"#A78BFA", green:"#86D9B5", amber:"#F0C97D",
+  red:"#E8918A", text:"#F0F0F5", sub:"#9A9BAC"
+};
+
+function scoreColor(score){
+  if(score>=70) return C.green;
+  if(score>=40) return C.amber;
+  return C.red;
+}
+
+function ringSVG(score,color,size=120,customLabel=null){
+  const stroke=7;
+  const r=(size-stroke)/2;
+  const c=2*Math.PI*r;
+  const offset=c-(score/100)*c;
+  const wrap=el("div",{style:{position:"relative",width:size+"px",height:size+"px"}});
+  wrap.innerHTML=`
+    <svg width="${size}" height="${size}" style="transform:rotate(-90deg)">
+      <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="${C.border}" stroke-width="${stroke}"/>
+      <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="${color}" stroke-width="${stroke}"
+        stroke-dasharray="${c}" stroke-dashoffset="${offset}" stroke-linecap="round"
+        style="transition:stroke-dashoffset 0.8s ease"/>
+    </svg>`;
+  const label=el("div",{style:{position:"absolute",top:"0",left:"0",width:"100%",height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}},
+    el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:(size*0.24)+"px",fontWeight:"800",color:color}},customLabel!==null?customLabel:Math.round(score)+"%")
+  );
+  wrap.appendChild(label);
+  return wrap;
+}
+
+async function fetchAllData() {
+  try {
+    const res = await fetch(APPS_SCRIPT_URL);
+    const json = await res.json();
+    const normalize = arr => (arr||[]).map(row => {
+      const obj = {};
+      Object.keys(row).forEach(k => { obj[k.trim()] = row[k]; });
+      return obj;
+    });
+    return { watch: normalize(json.watch), checkin: normalize(json.checkin) };
+  } catch(e) { console.error(e); return { watch:[], checkin:[] }; }
+}
+
+async function sendCheckin(answers) {
+  try {
+    await fetch(APPS_SCRIPT_URL, {
+      method:"POST",
+      body: JSON.stringify({ type:"checkin", date: new Date().toLocaleDateString("fr-FR"), ...answers })
+    });
+  } catch(e) { console.error(e); }
+}
+
+async function getAllAIAdvice(watchRow, checkinRow) {
+  const prompt = `Tu es APEX, un coach de performance façon Whoop. Analyse ces données et réponds UNIQUEMENT en JSON valide, sans texte autour, sans markdown.
+
+DONNÉES MONTRE:
+- HRV: ${watchRow.HRV||watchRow.hrv||checkinRow.hrv_matin||"N/A"}ms | FC repos: ${watchRow.FC_repos||watchRow.fc_repos||"N/A"}bpm
+- Sommeil: ${watchRow.sommeil_h||checkinRow.sommeil_h||"N/A"}h | SpO2: ${watchRow.spo2||"N/A"}%
+
+CHECK-IN MATIN:
+- Ressenti sommeil: ${checkinRow.ressenti_sommeil||"N/A"}/5 | Énergie: ${checkinRow.energie||"N/A"}/5
+- Stress hier: ${checkinRow.stress_veille||"N/A"}/5 | Alcool: ${checkinRow.alcool||"N/A"}
+- Écrans: ${checkinRow.ecrans||"N/A"}/5 | Dernier repas: ${checkinRow.dernier_repas||"N/A"}/5
+- Sport hier: ${checkinRow.sport_veille||"N/A"} | Humeur: ${checkinRow.humeur||"N/A"}/5
+
+Réponds avec exactement ce format JSON :
+{
+  "recovery": {"score": <0-100>, "summary": "<1 phrase courte>", "tips": ["<conseil 1>", "<conseil 2>", "<conseil 3>"]},
+  "sleep": {"score": <0-100>, "summary": "<1 phrase courte>", "tips": ["<conseil 1>", "<conseil 2>", "<conseil 3>"]},
+  "training": {"score": <0-100>, "summary": "<1 phrase courte>", "tips": ["<conseil 1>", "<conseil 2>", "<conseil 3>"]},
+  "nutrition": {"score": <0-100>, "summary": "<1 phrase courte>", "tips": ["<conseil 1>", "<conseil 2>", "<conseil 3>"]}
+}
+
+Les scores doivent être cohérents avec les données chiffrées. Les conseils doivent être courts, directs, actionnables, en français.`;
+
+  try {
+    const res = await fetch(APPS_SCRIPT_URL, {
+      method: "POST",
+      body: JSON.stringify({ type: "ai", prompt })
+    });
+    const data = await res.json();
+    const clean = (data.text||"").replace(/```json|```/g,"").trim();
+    return JSON.parse(clean);
+  } catch(e) {
+    console.error(e);
+    return null;
+  }
+}
+
+// DOM helpers
+const el = (tag, props={}, ...children) => {
+  const e = document.createElement(tag);
+  const {style, onClick, ...attrs} = props;
+  if(style) Object.assign(e.style, style);
+  if(onClick) e.addEventListener("click", onClick);
+  Object.entries(attrs).forEach(([k,v]) => { if(v!==undefined && k!=="style" && k!=="onClick") e.setAttribute(k,v); });
+  children.flat().forEach(c => { if(c==null) return; e.appendChild(typeof c==="string" ? document.createTextNode(c) : c); });
+  return e;
+};
+
+function sparkline(data, color, width=140, height=36) {
+  if(!data||data.length<2) return el("span");
+  const max=Math.max(...data), min=Math.min(...data);
+  const pts = data.map((v,i) => {
+    const x=(i/(data.length-1))*width;
+    const y=height-((v-min)/(max-min||1))*(height-4)-2;
+    return `${x},${y}`;
+  }).join(" ");
+  const last = pts.trim().split(" ").pop().split(",");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("width",width); svg.setAttribute("height",height);
+  svg.style.overflow="visible";
+  svg.innerHTML=`
+    <defs><linearGradient id="g${color.replace('#','')}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="${color}" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
+    </linearGradient></defs>
+    <polygon points="${pts} ${width},${height} 0,${height}" fill="url(#g${color.replace('#','')})"/>
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="${last[0]}" cy="${last[1]}" r="3" fill="${color}"/>`;
+  return svg;
+}
+
+function gaugeArc(value, min, max, label, size=120){
+  // demi-cercle dégradé bleu->vert->jaune, style Whoop "1.5 MEDIUM"
+  const r=(size-16)/2, circ=Math.PI*r;
+  const pct=Math.max(0,Math.min(1,(value-min)/(max-min)));
+  const dash=pct*circ;
+  const gradId="g"+Math.random().toString(36).slice(2,8);
+  const wrap=el("div",{style:{position:"relative",width:size+"px",height:(size/2+24)+"px"}});
+  wrap.innerHTML=`
+    <svg width="${size}" height="${size/2+10}" viewBox="0 0 ${size} ${size/2+10}">
+      <defs><linearGradient id="${gradId}" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stop-color="${C.cyan}"/><stop offset="55%" stop-color="${C.green}"/><stop offset="100%" stop-color="${C.amber}"/>
+      </linearGradient></defs>
+      <path d="M 8 ${size/2} A ${r} ${r} 0 0 1 ${size-8} ${size/2}" fill="none" stroke="${C.border}" stroke-width="8" stroke-linecap="round"/>
+      <path d="M 8 ${size/2} A ${r} ${r} 0 0 1 ${size-8} ${size/2}" fill="none" stroke="url(#${gradId})" stroke-width="8"
+        stroke-linecap="round" stroke-dasharray="${dash} ${circ}"/>
+    </svg>`;
+  const info=el("div",{style:{position:"absolute",top:"34%",left:"0",width:"100%",display:"flex",flexDirection:"column",alignItems:"center"}},
+    el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:"22px",fontWeight:"800",color:C.text}},String(value)),
+    el("div",{style:{fontSize:"9px",fontWeight:"700",color:C.green,letterSpacing:"0.08em",textTransform:"uppercase"}},label)
+  );
+  wrap.appendChild(info);
+  return wrap;
+}
+
+function metricChecks(items){
+  // rangée de pictogrammes avec checkmark style Whoop (RESP/SPO2/RHR/HRV/TEMP)
+  const row=el("div",{style:{display:"flex",justifyContent:"space-between",gap:"6px"}});
+  items.forEach(it=>{
+    row.appendChild(el("div",{style:{display:"flex",flexDirection:"column",alignItems:"center",gap:"6px",flex:"1"}},
+      el("span",{style:{fontSize:"18px"}},it.icon),
+      el("span",{style:{fontSize:"9px",color:C.sub,fontWeight:"700",letterSpacing:"0.05em"}},it.label),
+      el("div",{style:{width:"18px",height:"18px",borderRadius:"5px",background:it.ok?`${C.green}33`:`${C.amber}33`,
+        display:"flex",alignItems:"center",justifyContent:"center",fontSize:"10px",color:it.ok?C.green:C.amber,fontWeight:"800"}},it.ok?"✓":"!")
+    ));
+  });
+  return row;
+}
+
+function zoneBars(zones){
+  // barres horizontales empilées style Whoop sleep zones
+  const wrap=el("div",{style:{display:"flex",flexDirection:"column",gap:"10px"}});
+  zones.forEach(z=>{
+    const row=el("div",{style:{display:"flex",flexDirection:"column",gap:"4px"}});
+    row.appendChild(el("div",{style:{display:"flex",justifyContent:"space-between",fontSize:"10px"}},
+      el("span",{style:{color:C.sub,fontWeight:"700",letterSpacing:"0.04em"}},z.label),
+      el("span",{style:{color:C.sub}},z.value)
+    ));
+    const track=el("div",{style:{width:"100%",height:"6px",borderRadius:"3px",background:C.border,overflow:"hidden"}});
+    track.appendChild(el("div",{style:{width:z.pct+"%",height:"100%",background:z.color,borderRadius:"3px"}}));
+    row.appendChild(track);
+    wrap.appendChild(row);
+  });
+  return wrap;
+}
+
+function scoreRing(score) {
+  const size=140, r=(size-20)/2, circ=2*Math.PI*r;
+  const dash=((score||0)/100)*circ;
+  const color = score>=75?C.green:score>=50?C.cyan:C.amber;
+  const wrap = el("div",{style:{position:"relative",width:size+"px",height:size+"px",margin:"0 auto"}});
+  const svg = document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("width",size); svg.setAttribute("height",size);
+  svg.innerHTML=`
+    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="${C.border}" stroke-width="10"/>
+    <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="${color}" stroke-width="10"
+      stroke-dasharray="${dash} ${circ}" stroke-dashoffset="${circ/4}" stroke-linecap="round"
+      style="transition:stroke-dasharray 1s ease;filter:drop-shadow(0 0 8px ${color})"/>`;
+  const info = el("div",{style:{position:"absolute",inset:"0",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}},
+    el("span",{style:{fontSize:"36px",fontWeight:"800",color,fontFamily:"Syne,sans-serif",lineHeight:"1"}},String(score||"—")),
+    el("span",{style:{fontSize:"10px",color:C.sub,letterSpacing:"0.15em",textTransform:"uppercase",marginTop:"4px"}},"Score Global")
+  );
+  wrap.appendChild(svg); wrap.appendChild(info);
+  return wrap;
+}
+
+function barChart(data, labels, color) {
+  if(!data||!data.length) return el("div",{style:{color:C.sub,fontSize:"13px",padding:"20px",textAlign:"center"}},"Pas encore de données");
+  const max=Math.max(...data)||1;
+  const wrap=el("div",{style:{display:"flex",alignItems:"flex-end",gap:"6px",height:"80px"}});
+  data.forEach((v,i) => {
+    wrap.appendChild(el("div",{style:{flex:"1",display:"flex",flexDirection:"column",alignItems:"center",gap:"4px"}},
+      el("div",{style:{width:"100%",background:C.border,borderRadius:"4px",height:"64px",display:"flex",alignItems:"flex-end",overflow:"hidden"}},
+        el("div",{style:{width:"100%",height:`${(v/max)*100}%`,background:`linear-gradient(to top,${color},${color}99)`,borderRadius:"4px",transition:"height 0.8s ease"}})
+      ),
+      el("span",{style:{fontSize:"9px",color:C.sub}},labels[i]||"")
+    ));
+  });
+  return wrap;
+}
+
+// State
+let state = {
+  watchData:[], checkinData:[], loading:true,
+  showCheckin:false, checkinDone:false, checkinAnswers:{},
+  checkinStep:0, checkinCurrentAnswers:{}, aiData:null, aiLoading:null, detailMetric:null
+};
+
+const QUESTIONS = [
+  {id:"hrv_matin",type:"number",label:"Quel est ton HRV ce matin ? (app Coros)",emoji:"💓",placeholder:"Ex: 58"},
+  {id:"ressenti_sommeil",type:"scale",label:"Comment as-tu dormi cette nuit ?",emoji:"🌙",scale:["Très mal","Mal","Moyen","Bien","Excellent"]},
+  {id:"energie",type:"scale",label:"Ton niveau d'énergie ce matin ?",emoji:"⚡",scale:["Épuisé","Fatigué","Correct","Énergique","Boosté"]},
+  {id:"stress_veille",type:"scale",label:"Niveau de stress hier ?",emoji:"🧠",scale:["Nul","Léger","Modéré","Élevé","Intense"]},
+  {id:"alcool",type:"bool",label:"As-tu consommé de l'alcool hier soir ?",emoji:"🍷"},
+  {id:"ecrans",type:"scale",label:"Écrans avant de dormir ?",emoji:"📱",scale:["Aucun","< 30min","30-60min","1-2h","> 2h"]},
+  {id:"dernier_repas",type:"scale",label:"Heure du dernier repas ?",emoji:"🍽️",scale:["> 21h","20-21h","19-20h","18-19h","< 18h"]},
+  {id:"sport_veille",type:"bool",label:"As-tu fait du sport hier ?",emoji:"🏋️"},
+  {id:"humeur",type:"scale",label:"Ton humeur ce matin ?",emoji:"😊",scale:["Déprimé","Triste","Neutre","Positif","Euphorique"]},
+];
+
+const METRIC_INFO = {
+  hrv:{label:"HRV",unit:"ms",emoji:"💓",color:"purple",norm:"50–100 ms chez un adulte actif. Plus le chiffre est élevé, mieux le système nerveux récupère.",low:"En dessous de 40 ms : signe de fatigue ou stress accumulé."},
+  sleep:{label:"Sommeil",unit:"h",emoji:"🌙",color:"cyan",norm:"7–9 h recommandées pour un adulte. En dessous de 6h, la récupération et la performance baissent nettement.",low:"Moins de 6h sur plusieurs jours augmente le risque de blessure et de baisse de concentration."},
+  recovery:{label:"Récupération",unit:"%",emoji:"⟳",color:"green",norm:"70–100% : prêt à performer. 40–69% : récupération partielle, intensité modérée conseillée. <40% : repos recommandé.",low:""},
+  fc:{label:"FC repos",unit:"bpm",emoji:"❤️",color:"amber",norm:"50–70 bpm chez un adulte sportif. Plus c'est bas, meilleure est généralement la condition cardiovasculaire.",low:"Au dessus de 75 bpm au repos : possible signe de fatigue, stress ou début de surentraînement."}
+};
+
+function metricStats(key, week){
+  const fieldMap = { hrv:r=>r.HRV||0, sleep:r=>r.sommeil_h||0, fc:r=>r.FC_repos||0 };
+  if(key==="recovery" || !fieldMap[key]) return null;
+  const vals = week.map(fieldMap[key]).filter(v=>v>0);
+  if(vals.length===0) return null;
+  const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
+  const last = vals[vals.length-1];
+  const prev = vals.length>1 ? vals[vals.length-2] : last;
+  const trend = last - prev;
+  return { avg: Math.round(avg*10)/10, last, trend };
+}
+
+function render() {
+  const root = document.getElementById("root");
+  root.innerHTML = "";
+
+  if(state.loading) {
+    root.appendChild(el("div",{style:{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:"16px"}},
+      el("div",{style:{width:"40px",height:"40px",border:`3px solid ${C.purple}`,borderTopColor:C.cyan,borderRadius:"50%",animation:"spin 0.8s linear infinite"}}),
+      el("div",{style:{color:C.sub,fontSize:"14px"}},"Chargement de tes données…")
+    ));
+    return;
+  }
+
+  const deduped = Object.values(
+    state.watchData.reduce((acc,row) => { const k=String(row.date||"").substring(0,10); acc[k]=row; return acc; },{})
+  );
+  const todayDateStr = new Date().toLocaleDateString("fr-FR");
+  const todayISOStr = new Date().toISOString().slice(0,10);
+  const todayRow = deduped.find(r => {
+    const d = String(r.date||"");
+    return d === todayDateStr || d.startsWith(todayISOStr) || d.includes(todayDateStr);
+  });
+  const today = todayRow || deduped[deduped.length-1] || {};
+  const week = deduped.slice(-7);
+  const labels = week.map(r => { const m=String(r.date||"").match(/(\d+)\s+(\w+)/); return m?m[1]+" "+m[2].substring(0,3):""; });
+  // HRV : priorité au check-in matin si Sheet1 vide
+  const todayCheckinRow = state.checkinAnswers || {};
+  const hrv = today.HRV || todayCheckinRow.hrv_matin || 0;
+  const fcRepos=today.FC_repos||today.fc_repos||0;
+  const sommeilH=today.sommeil_h||today.Sommeil_h||todayCheckinRow.sommeil_h||0;
+  const steps=today.pas||0, spo2=today.spo2||0;
+  const globalScore=Math.round((Math.min(hrv/80,1)*100*0.4)+(Math.min(steps/10000,1)*100*0.2)+(sommeilH>0?Math.min(sommeilH/8,1)*100*0.4:40));
+
+  // Header
+  root.appendChild(el("div",{style:{background:C.surface,borderBottom:`1px solid ${C.border}`,padding:"0 24px",display:"flex",alignItems:"center",height:"56px",gap:"16px",position:"sticky",top:"0",zIndex:"100"}},
+    el("div",{style:{display:"flex",alignItems:"center",gap:"10px",flexShrink:"0"}},
+      el("div",{style:{width:"28px",height:"28px",borderRadius:"8px",background:`linear-gradient(135deg,${C.purple},${C.cyan})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"14px",fontWeight:"800",color:"#fff",fontFamily:"Syne,sans-serif"}},"A"),
+      el("span",{style:{fontFamily:"Syne,sans-serif",fontWeight:"800",fontSize:"18px",letterSpacing:"0.05em"}},"APEX")
+    ),
+    el("div",{style:{flex:"1"}}),
+    el("div",{style:{display:"flex",alignItems:"center",gap:"12px",flexShrink:"0"}},
+      !state.checkinDone?el("button",{
+        style:{padding:"6px 14px",borderRadius:"20px",border:`1px solid ${C.amber}`,background:`${C.amber}22`,color:C.amber,fontSize:"12px",fontWeight:"600",animation:"pulse 2s ease-in-out infinite"},
+        onClick:()=>{state.showCheckin=true;state.checkinStep=0;state.checkinCurrentAnswers={};render();}
+      },"☀ Check-in"):null,
+      el("div",{style:{width:"8px",height:"8px",borderRadius:"50%",background:deduped.length>0?C.green:C.red,boxShadow:`0 0 8px ${deduped.length>0?C.green:C.red}`}})
+    )
+  ));
+
+  // Checkin modal
+  if(state.showCheckin) {
+    const q=QUESTIONS[state.checkinStep];
+    const progress=(state.checkinStep/QUESTIONS.length)*100;
+    const modal=el("div",{style:{position:"fixed",inset:"0",background:"#00000099",zIndex:"200",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px"}});
+    const box=el("div",{style:{background:C.surface,borderRadius:"24px",padding:"32px",width:"100%",maxWidth:"520px",border:`1px solid ${C.border}`,position:"relative",maxHeight:"90vh",overflowY:"auto"}});
+
+    const answerQ = async (val) => {
+      const newA={...state.checkinCurrentAnswers,[q.id]:val};
+      state.checkinCurrentAnswers=newA;
+      if(state.checkinStep<QUESTIONS.length-1){state.checkinStep++;render();}
+      else{
+        state.checkinAnswers=newA;
+        state.checkinDone=true;
+        state.showCheckin=false;
+        state.aiData=null;
+        // Sauvegarder dans localStorage
+        const todayKey = new Date().toLocaleDateString("fr-FR");
+        try { localStorage.setItem("apex_checkin_"+todayKey, JSON.stringify(newA)); } catch(e) {}
+        render();
+        sendCheckin(newA);
+        loadAI();
+      }
+    };
+
+    box.appendChild(el("button",{style:{position:"absolute",top:"16px",right:"16px",background:"none",border:"none",color:C.sub,fontSize:"20px"},onClick:()=>{state.showCheckin=false;render();}},"✕"));
+    box.appendChild(el("div",{style:{textAlign:"center",marginBottom:"20px"}},
+      el("div",{style:{fontSize:"32px",marginBottom:"8px"}},"☀️"),
+      el("h2",{style:{fontFamily:"Syne,sans-serif",fontSize:"22px",fontWeight:"800",color:C.cyan}},"Check-in Matin")
+    ));
+    box.appendChild(el("div",{style:{marginBottom:"20px"}},
+      el("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:"6px"}},
+        el("span",{style:{fontSize:"12px",color:C.sub}},`Question ${state.checkinStep+1} / ${QUESTIONS.length}`),
+        el("span",{style:{fontSize:"12px",color:C.cyan}},`${Math.round(progress)}%`)
+      ),
+      el("div",{style:{height:"3px",background:C.border,borderRadius:"3px"}},
+        el("div",{style:{height:"100%",width:`${progress}%`,background:`linear-gradient(90deg,${C.purple},${C.cyan})`,borderRadius:"3px",transition:"width 0.4s ease"}})
+      )
+    ));
+
+    const qCard=el("div",{style:{background:C.card,border:`1px solid ${C.border}`,borderRadius:"16px",padding:"24px",textAlign:"center"}},
+      el("div",{style:{fontSize:"40px",marginBottom:"12px"}},q.emoji),
+      el("h3",{style:{fontSize:"18px",fontWeight:"600",color:C.text,marginBottom:"20px",fontFamily:"Syne,sans-serif"}},q.label)
+    );
+    if(q.type==="number"){
+      let inputVal = state.checkinCurrentAnswers[q.id] || "";
+      const inputWrap = el("div",{style:{display:"flex",flexDirection:"column",gap:"12px",alignItems:"center"}});
+      const input = document.createElement("input");
+      input.type = "number"; input.placeholder = q.placeholder || "0";
+      input.value = inputVal;
+      Object.assign(input.style,{width:"100%",padding:"14px",borderRadius:"10px",border:`1px solid ${C.border}`,background:C.surface,color:C.text,fontSize:"24px",textAlign:"center",fontFamily:"Syne,sans-serif",fontWeight:"700",outline:"none"});
+      input.addEventListener("input", e => { inputVal = e.target.value; state.checkinCurrentAnswers[q.id] = inputVal; });
+      const btn = el("button",{
+        style:{width:"100%",padding:"13px",borderRadius:"10px",border:"none",background:`linear-gradient(135deg,${C.purple},${C.cyan})`,color:"#fff",fontSize:"15px",fontWeight:"700"},
+        onClick:()=>{ if(inputVal) answerQ(Number(inputVal)); }
+      },"Confirmer →");
+      inputWrap.appendChild(input);
+      inputWrap.appendChild(btn);
+      qCard.appendChild(inputWrap);
+      setTimeout(()=>input.focus(),100);
+    } else if(q.type==="scale"){
+      q.scale.forEach((label,i)=>{
+        qCard.appendChild(el("button",{
+          style:{width:"100%",padding:"11px 16px",borderRadius:"10px",border:`1px solid ${C.border}`,background:C.surface,color:C.text,fontSize:"14px",textAlign:"left",display:"flex",alignItems:"center",gap:"10px",marginBottom:"8px"},
+          onClick:()=>answerQ(i+1)
+        },
+          el("span",{style:{width:"22px",height:"22px",borderRadius:"50%",background:`linear-gradient(135deg,${C.purple},${C.cyan})`,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:"11px",fontWeight:"700",color:"#fff",flexShrink:"0"}},String(i+1)),
+          label
+        ));
+      });
+    } else {
+      const row=el("div",{style:{display:"flex",gap:"12px"}});
+      ["Oui","Non"].forEach((label,i)=>{
+        row.appendChild(el("button",{
+          style:{flex:"1",padding:"14px",borderRadius:"10px",border:`1px solid ${C.border}`,background:i===0?`${C.green}22`:`${C.red}22`,color:i===0?C.green:C.red,fontSize:"15px",fontWeight:"600"},
+          onClick:()=>answerQ(i===0?"Oui":"Non")
+        },(i===0?"✓ ":"✗ ")+label));
+      });
+      qCard.appendChild(row);
+    }
+    box.appendChild(qCard);
+    modal.appendChild(box);
+    root.appendChild(modal);
+  }
+
+  if(state.detailMetric){
+    const info=METRIC_INFO[state.detailMetric];
+    const stats=metricStats(state.detailMetric,week);
+    const color=C[info.color];
+    const modal=el("div",{style:{position:"fixed",inset:"0",background:"#00000099",zIndex:"200",display:"flex",alignItems:"flex-end",justifyContent:"center"}});
+    const box=el("div",{style:{background:C.surface,borderRadius:"24px 24px 0 0",padding:"28px",width:"100%",maxWidth:"560px",position:"relative",maxHeight:"80vh",overflowY:"auto"}});
+
+    box.appendChild(el("button",{style:{position:"absolute",top:"16px",right:"16px",background:"none",border:"none",color:C.sub,fontSize:"20px"},onClick:()=>{state.detailMetric=null;render();}},"✕"));
+    box.appendChild(el("div",{style:{textAlign:"center",marginBottom:"22px"}},
+      el("div",{style:{fontSize:"32px",marginBottom:"6px"}},info.emoji),
+      el("h2",{style:{fontFamily:"Syne,sans-serif",fontSize:"20px",fontWeight:"800",color}},info.label)
+    ));
+
+    if(stats){
+      const statsRow=el("div",{style:{display:"flex",gap:"10px",marginBottom:"20px"}});
+      [
+        {label:"Aujourd'hui",value:stats.last+" "+info.unit},
+        {label:"Moyenne 7j",value:stats.avg+" "+info.unit},
+        {label:"Tendance",value:(stats.trend>0?"↑ +":stats.trend<0?"↓ ":"→ ")+Math.abs(Math.round(stats.trend*10)/10)},
+      ].forEach(s=>{
+        statsRow.appendChild(el("div",{style:{flex:"1",background:C.card,borderRadius:"14px",padding:"14px 8px",textAlign:"center"}},
+          el("div",{style:{fontSize:"17px",fontWeight:"800",color:C.text,fontFamily:"Syne,sans-serif"}},s.value),
+          el("div",{style:{fontSize:"10px",color:C.sub,marginTop:"4px",fontWeight:"700",letterSpacing:"0.04em",textTransform:"uppercase"}},s.label)
+        ));
+      });
+      box.appendChild(statsRow);
+    }
+
+    box.appendChild(el("div",{style:{background:C.card,borderRadius:"16px",padding:"18px",marginBottom:info.low?"12px":"0"}},
+      el("div",{style:{fontSize:"10px",fontWeight:"700",color,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:"8px"}},"📊 Référence générale"),
+      el("p",{style:{fontSize:"13.5px",color:C.text,lineHeight:"1.6"}},info.norm)
+    ));
+    if(info.low) box.appendChild(el("div",{style:{background:`${C.amber}15`,borderRadius:"16px",padding:"18px"}},
+      el("div",{style:{fontSize:"10px",fontWeight:"700",color:C.amber,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:"8px"}},"⚠ À surveiller"),
+      el("p",{style:{fontSize:"13.5px",color:C.text,lineHeight:"1.6"}},info.low)
+    ));
+
+    modal.appendChild(box);
+    root.appendChild(modal);
+  }
+
+  // Main
+  const main=el("div",{style:{maxWidth:"1100px",margin:"0 auto",padding:"32px 24px"}});
+
+  {
+    main.appendChild(el("div",{style:{marginBottom:"28px"}},
+      el("h1",{style:{fontFamily:"Syne,sans-serif",fontSize:"28px",fontWeight:"800",marginBottom:"4px"}},"Bonjour 👋"),
+      el("p",{style:{color:C.sub,fontSize:"15px"}},
+        new Date().toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long",year:"numeric"})+
+        (deduped.length>0?` · ${deduped.length} jours de données`:" · Lance le raccourci APEX Sync sur iPhone")
+      )
+    ));
+
+    if(deduped.length===0){
+      main.appendChild(el("div",{style:{background:`${C.amber}11`,border:`1px solid ${C.amber}44`,borderRadius:"16px",padding:"32px",textAlign:"center"}},
+        el("div",{style:{fontSize:"48px",marginBottom:"16px"}},"⌚"),
+        el("h3",{style:{fontFamily:"Syne,sans-serif",fontSize:"20px",color:C.amber,marginBottom:"8px"}},"Aucune donnée pour l'instant"),
+        el("p",{style:{color:C.sub,fontSize:"14px"}},"Lance le raccourci APEX Sync sur ton iPhone.")
+      ));
+    } else {
+      const topGrid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"14px",marginBottom:"14px"}});
+
+      // Carte 1 : sommeil en anneau % avec durée réelle affichée
+      const sleepPct = sommeilH ? Math.min(100,Math.round((sommeilH/8)*100)) : 0;
+      const sleepCard=el("div",{style:{background:C.card,borderRadius:"18px",padding:"18px",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"6px",cursor:"pointer",transition:"transform 0.15s ease, background 0.15s ease"},
+        onClick:()=>{state.detailMetric="sleep";render();}});
+      sleepCard.addEventListener("mousedown",()=>{sleepCard.style.transform="scale(0.97)";sleepCard.style.background=C.surface;});
+      sleepCard.addEventListener("mouseup",()=>{sleepCard.style.transform="scale(1)";sleepCard.style.background=C.card;});
+      sleepCard.appendChild(ringSVG(sleepPct,C.cyan,96));
+      sleepCard.appendChild(el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:"20px",fontWeight:"800",color:C.text,marginTop:"2px"}},(sommeilH||"—")+" h"));
+      sleepCard.appendChild(el("div",{style:{fontSize:"10px",fontWeight:"700",color:C.sub,letterSpacing:"0.06em",textTransform:"uppercase"}},"Sommeil"));
+      topGrid.appendChild(sleepCard);
+
+      // Carte 2 : score global en jauge demi-cercle
+      const gaugeLabel = globalScore>=75?"Élevé":globalScore>=50?"Moyen":"Faible";
+      const gaugeCard=el("div",{style:{background:C.card,borderRadius:"18px",padding:"18px",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"6px",cursor:"pointer",transition:"transform 0.15s ease, background 0.15s ease"},
+        onClick:()=>{state.detailMetric="recovery";render();}});
+      gaugeCard.addEventListener("mousedown",()=>{gaugeCard.style.transform="scale(0.97)";gaugeCard.style.background=C.surface;});
+      gaugeCard.addEventListener("mouseup",()=>{gaugeCard.style.transform="scale(1)";gaugeCard.style.background=C.card;});
+      gaugeCard.appendChild(gaugeArc(globalScore,0,100,gaugeLabel,96));
+      gaugeCard.appendChild(el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:"20px",fontWeight:"800",color:C.text,marginTop:"-4px"}},globalScore+"%"));
+      gaugeCard.appendChild(el("div",{style:{fontSize:"10px",fontWeight:"700",color:C.sub,letterSpacing:"0.06em",textTransform:"uppercase"}},"Récupération"));
+      topGrid.appendChild(gaugeCard);
+
+      // Carte 3 : HRV en anneau avec chiffre réel
+      const hrvPct = hrv ? Math.max(0,Math.min(100,(hrv/80)*100)) : 0;
+      const hrvCard=el("div",{style:{background:C.card,borderRadius:"18px",padding:"18px",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"6px",cursor:"pointer",transition:"transform 0.15s ease, background 0.15s ease"},
+        onClick:()=>{state.detailMetric="hrv";render();}});
+      hrvCard.addEventListener("mousedown",()=>{hrvCard.style.transform="scale(0.97)";hrvCard.style.background=C.surface;});
+      hrvCard.addEventListener("mouseup",()=>{hrvCard.style.transform="scale(1)";hrvCard.style.background=C.card;});
+      hrvCard.appendChild(ringSVG(hrvPct,C.purple,96,String(hrv||"—")));
+      hrvCard.appendChild(el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:"20px",fontWeight:"800",color:C.text,marginTop:"2px"}},(hrv||"—")+" ms"));
+      hrvCard.appendChild(el("div",{style:{fontSize:"10px",fontWeight:"700",color:C.sub,letterSpacing:"0.06em",textTransform:"uppercase"}},"HRV"));
+      topGrid.appendChild(hrvCard);
+
+      // Carte 4 : FC repos en anneau avec chiffre réel
+      const fcPct = fcRepos ? Math.max(0,Math.min(100,100-((fcRepos-45)/(80-45))*100)) : 0;
+      const fcCard=el("div",{style:{background:C.card,borderRadius:"18px",padding:"18px",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:"6px",cursor:"pointer",transition:"transform 0.15s ease, background 0.15s ease"},
+        onClick:()=>{state.detailMetric="fc";render();}});
+      fcCard.addEventListener("mousedown",()=>{fcCard.style.transform="scale(0.97)";fcCard.style.background=C.surface;});
+      fcCard.addEventListener("mouseup",()=>{fcCard.style.transform="scale(1)";fcCard.style.background=C.card;});
+      fcCard.appendChild(ringSVG(fcPct,C.amber,96,String(fcRepos||"—")));
+      fcCard.appendChild(el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:"20px",fontWeight:"800",color:C.text,marginTop:"2px"}},(fcRepos||"—")+" bpm"));
+      fcCard.appendChild(el("div",{style:{fontSize:"10px",fontWeight:"700",color:C.sub,letterSpacing:"0.06em",textTransform:"uppercase"}},"FC repos"));
+      topGrid.appendChild(fcCard);
+
+      main.appendChild(topGrid);
+
+      // Rangée de pictogrammes checkmark style Whoop
+      const checksCard=el("div",{style:{background:C.card,borderRadius:"18px",padding:"16px 20px",marginBottom:"14px"}});
+      checksCard.appendChild(metricChecks([
+        {icon:"💓",label:"HRV",ok:hrv>40},
+        {icon:"❤️",label:"FC",ok:fcRepos>0 && fcRepos<75},
+        {icon:"🌙",label:"SOMMEIL",ok:sommeilH>=6},
+        {icon:"🫁",label:"SPO2",ok:true},
+        {icon:"🌡️",label:"TEMP",ok:true},
+      ]));
+      main.appendChild(checksCard);
+
+      const chartsGrid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"14px",marginBottom:"14px"}});
+      [{label:"HRV 7 jours",data:week.map(r=>r.HRV||0),color:C.cyan},
+       {label:"Sommeil 7 jours (h)",data:week.map(r=>r.sommeil_h||0),color:C.purple},
+      ].forEach(ch=>{
+        chartsGrid.appendChild(el("div",{style:{background:C.card,borderRadius:"18px",padding:"18px"}},
+          el("div",{style:{fontSize:"10px",color:C.sub,marginBottom:"10px",textTransform:"uppercase",letterSpacing:"0.08em",fontWeight:"700"}},ch.label),
+          barChart(ch.data,labels,ch.color)
+        ));
+      });
+      main.appendChild(chartsGrid);
+
+      main.appendChild(state.checkinDone
+        ? el("div",{style:{background:`${C.green}11`,border:`1px solid ${C.green}44`,borderRadius:"16px",padding:"20px",display:"flex",gap:"16px",alignItems:"center"}},
+            el("span",{style:{fontSize:"28px"}},"✅"),
+            el("div",{style:{flex:"1"}},
+              el("div",{style:{fontWeight:"600",color:C.green,marginBottom:"4px"}},"Check-in complété · Données enregistrées"),
+              el("div",{style:{fontSize:"13px",color:C.sub}},"Tes recommandations IA sont prêtes ci-dessous.")
+            ),
+            el("button",{
+              style:{padding:"8px 14px",borderRadius:"8px",border:`1px solid ${C.border}`,background:"transparent",color:C.sub,fontSize:"12px",whiteSpace:"nowrap"},
+              onClick:()=>{state.checkinDone=false;state.checkinAnswers={};state.showCheckin=true;state.checkinStep=0;state.checkinCurrentAnswers={};render();}
+            },"✏️ Modifier")
+          )
+        : el("div",{style:{background:`${C.amber}11`,border:`1px solid ${C.amber}44`,borderRadius:"16px",padding:"20px",display:"flex",gap:"16px",alignItems:"center"}},
+            el("span",{style:{fontSize:"28px"}},"☀️"),
+            el("div",{style:{flex:"1"}},
+              el("div",{style:{fontWeight:"600",color:C.amber,marginBottom:"4px"}},"Check-in matin en attente"),
+              el("div",{style:{fontSize:"13px",color:C.sub}},"8 questions pour débloquer les conseils IA personnalisés.")
+            ),
+            el("button",{
+              style:{padding:"10px 18px",borderRadius:"10px",border:"none",background:C.amber,color:"#000",fontWeight:"700",fontSize:"13px",whiteSpace:"nowrap"},
+              onClick:()=>{state.showCheckin=true;state.checkinStep=0;state.checkinCurrentAnswers={};render();}
+            },"Commencer →")
+          )
+      );
+    }
+  }
+
+  if(deduped.length>0){
+    const sections=[
+      {key:"recovery",icon:"⟳",label:"Récupération",tipIcons:["💧","😴","🧘"]},
+      {key:"sleep",icon:"◐",label:"Sommeil",tipIcons:["🌙","📵","🛏️"]},
+      {key:"training",icon:"△",label:"Entraînement",tipIcons:["🏃","⏱️","💪"]},
+      {key:"nutrition",icon:"◈",label:"Nutrition",tipIcons:["🥗","💧","🍽️"]},
+    ];
+    const grid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"16px",marginTop:"24px"}});
+    sections.forEach(s=>{
+      const data = state.aiData ? (state.aiData[s.key]||{score:0,summary:"",tips:[]}) : null;
+      const color = data ? scoreColor(data.score) : C.sub;
+      const card=el("div",{style:{background:C.card,borderRadius:"22px",padding:"24px",position:"relative",overflow:"hidden"}});
+
+      const headerRow=el("div",{style:{display:"flex",alignItems:"center",gap:"8px",marginBottom:"16px"}},
+        el("span",{style:{fontSize:"16px"}},s.icon),
+        el("span",{style:{fontSize:"12px",fontWeight:"700",color:C.sub,letterSpacing:"0.08em",textTransform:"uppercase"}},s.label)
+      );
+      card.appendChild(headerRow);
+
+      if(!state.checkinDone){
+        card.appendChild(el("div",{style:{color:C.sub,fontSize:"13px"}},"Complète le check-in matin pour débloquer cette analyse."));
+      } else if(state.aiLoading===false && !state.aiData){
+        card.appendChild(el("div",{style:{color:C.red,fontSize:"13px"}},"⚠ Analyse IA indisponible (crédit API épuisé ou erreur)."));
+      } else if(!state.aiData){
+        const spinner=el("div",{style:{width:"16px",height:"16px",border:`2px solid ${C.purple}`,borderTopColor:"transparent",borderRadius:"50%",animation:"spin 0.8s linear infinite",flexShrink:"0",margin:"0 auto"}});
+        card.appendChild(el("div",{style:{display:"flex",flexDirection:"column",gap:"8px",alignItems:"center",color:C.sub,fontSize:"13px",padding:"20px 0"}},spinner,"Analyse en cours…"));
+      } else {
+        // Ring + résumé centré
+        const ringRow=el("div",{style:{display:"flex",flexDirection:"column",alignItems:"center",gap:"10px",marginBottom:"18px"}});
+        ringRow.appendChild(ringSVG(data.score||0,color,110));
+        if(data.summary) ringRow.appendChild(el("p",{style:{fontSize:"12.5px",color:C.sub,textAlign:"center",lineHeight:"1.4",maxWidth:"220px"}},data.summary));
+        card.appendChild(ringRow);
+
+        // Pastilles de conseils style Whoop metrics
+        const tipsRow=el("div",{style:{display:"flex",gap:"8px",justifyContent:"space-between"}});
+        (data.tips||[]).slice(0,3).forEach((tip,i)=>{
+          const pill=el("div",{style:{flex:"1",borderRadius:"14px",padding:"10px 4px",display:"flex",flexDirection:"column",alignItems:"center",gap:"6px",textAlign:"center"}},
+            el("span",{style:{fontSize:"18px"}},s.tipIcons[i]||"✓"),
+            el("span",{style:{fontSize:"10.5px",color:C.text,lineHeight:"1.3",fontWeight:"500"}},tip)
+          );
+          tipsRow.appendChild(pill);
+        });
+        card.appendChild(tipsRow);
+      }
+      grid.appendChild(card);
+    });
+    main.appendChild(grid);
+  }
+
+  root.appendChild(main);
+}
+
+function loadAI(){
+  if(!state.checkinDone) return;
+
+  // Vérifier le cache localStorage
+  const today = new Date().toISOString().slice(0,10);
+  const cacheKey = "apex_ai_" + today;
+  try {
+    const cached = localStorage.getItem(cacheKey);
+    if(cached) {
+      state.aiData = JSON.parse(cached);
+      state.aiLoading = false;
+      render();
+      return;
+    }
+  } catch(e) {}
+
+  // Pas de cache → appel API
+  state.aiData = null;
+  state.aiLoading = true;
+  const deduped = Object.values(
+    state.watchData.reduce((acc,row) => { const k=String(row.date||"").substring(0,10); acc[k]=row; return acc; },{})
+  );
+  const today2 = deduped[deduped.length-1]||{};
+  getAllAIAdvice(today2, state.checkinAnswers).then(data=>{
+    state.aiData = data;
+    state.aiLoading = false;
+    // Sauvegarder dans le cache
+    try { if(data) localStorage.setItem(cacheKey, JSON.stringify(data)); } catch(e) {}
+    render();
+  });
+}
+
+// Init
+fetchAllData().then(({watch,checkin})=>{
+  state.watchData=watch;
+  state.checkinData=checkin;
+
+  // 1. Vérifier localStorage en priorité
+  const todayKey = new Date().toLocaleDateString("fr-FR");
+  try {
+    const cached = localStorage.getItem("apex_checkin_"+todayKey);
+    if(cached){
+      state.checkinDone=true;
+      state.checkinAnswers=JSON.parse(cached);
+    }
+  } catch(e) {}
+
+  // 2. Si pas en cache, chercher dans Google Sheets
+  if(!state.checkinDone){
+    const todayISO = new Date().toISOString().slice(0,10);
+    const todayCheckins = checkin.filter(r => {
+      const d = String(r.date||r.Date||"");
+      return d === todayKey || d.startsWith(todayISO);
+    });
+    const todayCheckin = todayCheckins[todayCheckins.length-1];
+    if(todayCheckin){
+      state.checkinDone=true;
+      state.checkinAnswers=todayCheckin;
+      // Sauvegarder en cache pour la prochaine fois
+      try { localStorage.setItem("apex_checkin_"+todayKey, JSON.stringify(todayCheckin)); } catch(e) {}
+    }
+  }
+
+  state.loading=false;
+  render();
+  if(state.checkinDone) loadAI();
+});
+</script>
+</body>
+</html>
