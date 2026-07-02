@@ -134,7 +134,8 @@ const METRIC_INFO = {
 let state = {
   watchData:[], checkinData:[], loading:true,
   checkinDone:false, checkinAnswers:{}, checkinCurrentAnswers:{},
-  aiData:null, aiLoading:null, detailMetric:null, showSleepGraph:false
+  aiData:null, aiLoading:null, detailMetric:null,
+  realAge:null, showAgeInput:false
 };
 
 async function fetchAllData(){
@@ -265,7 +266,38 @@ function render(){
     root.appendChild(overlay);
   }
 
-  // ─── MAIN ───
+  // ─── MODAL ÂGE RÉEL ───
+  if(state.showAgeInput){
+    const overlay=el("div",{style:{position:"fixed",inset:"0",background:"#00000099",zIndex:"200",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px"}});
+    const box=el("div",{style:{background:C.surface,borderRadius:"24px",padding:"28px 24px",width:"100%",maxWidth:"320px",textAlign:"center"}});
+    box.appendChild(el("div",{style:{fontSize:"32px",marginBottom:"12px"}},"🧬"));
+    box.appendChild(el("h2",{style:{fontFamily:"Syne,sans-serif",fontSize:"18px",fontWeight:"800",color:C.text,marginBottom:"8px"}},"Ton âge réel ?"));
+    box.appendChild(el("p",{style:{fontSize:"12px",color:C.sub,marginBottom:"20px",lineHeight:"1.5"}},"Pour comparer ton âge biologique à ton âge réel et voir si tu es en avance ou en retard sur ton vieillissement."));
+    const inp=document.createElement("input");
+    inp.type="number"; inp.placeholder="Ex: 28"; inp.min="10"; inp.max="100";
+    Object.assign(inp.style,{width:"100%",padding:"12px 14px",borderRadius:"12px",border:`1px solid ${C.border}`,background:C.card,color:C.text,fontSize:"20px",fontFamily:"Syne,sans-serif",fontWeight:"700",textAlign:"center",marginBottom:"14px"});
+    box.appendChild(inp);
+    box.appendChild(el("button",{
+      style:{width:"100%",padding:"12px",borderRadius:"12px",border:"none",background:`linear-gradient(135deg,${C.purple},${C.cyan})`,color:"#fff",fontSize:"14px",fontWeight:"700",marginBottom:"8px"},
+      onClick:()=>{
+        const v=parseInt(inp.value);
+        if(v>=10&&v<=100){
+          state.realAge=v;
+          state.showAgeInput=false;
+          try{localStorage.setItem("apex_real_age",String(v));}catch(e){}
+          render();
+        }
+      }
+    },"Confirmer"));
+    box.appendChild(el("button",{
+      style:{width:"100%",padding:"10px",borderRadius:"12px",border:"none",background:"none",color:C.sub,fontSize:"13px"},
+      onClick:()=>{state.showAgeInput=false;render();}
+    },"Annuler"));
+    overlay.appendChild(box);
+    root.appendChild(overlay);
+  }
+
+
   const main=el("div",{style:{padding:"16px",maxWidth:"600px",margin:"0 auto",animation:"fadeIn 0.3s ease"}});
 
   // Bonjour
@@ -329,7 +361,24 @@ function render(){
       return tile;
     };
 
-    advGrid.appendChild(metricTile("🧬","Âge biologique",ba,"ans",baColor,"HRV + FC repos + sommeil"));
+    // Tuile âge biologique avec comparaison
+    const baTile = el("div",{style:{background:C.surface,borderRadius:"14px",padding:"12px"}});
+    baTile.appendChild(el("div",{style:{fontSize:"16px",marginBottom:"4px"}},"🧬"));
+    baTile.appendChild(el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:"20px",fontWeight:"800",color:baColor}},ba+" ans"));
+    baTile.appendChild(el("div",{style:{fontSize:"10px",fontWeight:"700",color:C.sub,marginTop:"2px",letterSpacing:"0.04em"}},"Âge biologique"));
+    if(state.realAge){
+      const diff = state.realAge - ba;
+      const diffColor = diff>0?C.green:diff<0?C.red:C.sub;
+      const diffText = diff>0?`${diff} ans plus jeune 🎉`:diff<0?`${Math.abs(diff)} ans plus vieux ⚠`:` = ton âge réel`;
+      baTile.appendChild(el("div",{style:{fontSize:"9px",color:diffColor,marginTop:"4px",fontWeight:"700"}},diffText));
+    } else {
+      const ageBtn = el("button",{
+        style:{fontSize:"9px",color:C.purple,marginTop:"4px",background:"none",border:"none",padding:"0",textDecoration:"underline",cursor:"pointer"},
+        onClick:()=>{state.showAgeInput=true;render();}
+      },"Entrer mon âge réel");
+      baTile.appendChild(ageBtn);
+    }
+    advGrid.appendChild(baTile);
     advGrid.appendChild(metricTile("😴","Dette de sommeil",sleepDebt,"h",sleepDebt!==null?(sleepDebt<3?C.green:sleepDebt<7?C.amber:C.red):C.sub,"vs 8h/nuit sur 7j"));
     advGrid.appendChild(metricTile("📊","Régularité sommeil",sleepRegScore,"%",sleepRegScore!==null?scoreColor(sleepRegScore):C.sub,"Variation des durées 7j"));
     advGrid.appendChild(metricTile("💫","Ratio HRV/FC",recovRatio,"",recovRatio!==null?(recovRatio>1?C.green:recovRatio>0.6?C.amber:C.red):C.sub,"Équilibre nerveux/cardio"));
@@ -378,7 +427,7 @@ function render(){
   main.appendChild(graphSection);
 
   // ─── CHECK-IN COMPACT (toutes questions visibles) ───
-  const answers = state.checkinDone ? state.checkinAnswers : state.checkinCurrentAnswers;
+  const answers = state.checkinDone ? {...state.checkinAnswers} : state.checkinCurrentAnswers;
   const allAnswered = QUESTIONS.every(q => q.id in answers);
 
   const checkinSection=el("div",{style:{background:C.card,borderRadius:"18px",padding:"16px",marginBottom:"12px"}});
@@ -526,8 +575,8 @@ function saveAndCheck(answers){
   } else if(state.checkinDone){
     state.checkinAnswers={...answers};
     try{localStorage.setItem("apex_checkin_"+k,JSON.stringify(state.checkinAnswers));}catch(e){}
-    // reset cache IA pour regénérer avec nouvelles réponses
     try{localStorage.removeItem("apex_ai_"+new Date().toISOString().slice(0,10));}catch(e){}
+    render();
   }
 }
 
@@ -555,6 +604,9 @@ fetchAllData().then(({watch,checkin})=>{
   state.watchData=watch; state.checkinData=checkin;
   const todayKey=new Date().toLocaleDateString("fr-FR");
   const todayISO=new Date().toISOString().slice(0,10);
+  // Charger l'âge réel
+  try{const a=localStorage.getItem("apex_real_age");if(a)state.realAge=parseInt(a);}catch(e){}
+  // Charger check-in
   try{const c=localStorage.getItem("apex_checkin_"+todayKey);if(c){state.checkinDone=true;state.checkinAnswers=JSON.parse(c);}}catch(e){}
   if(!state.checkinDone){
     const tc=checkin.filter(r=>{const d=String(r.date||r.Date||"");return d===todayKey||d.startsWith(todayISO);});
