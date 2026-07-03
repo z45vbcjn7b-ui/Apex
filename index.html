@@ -1,8 +1,8 @@
-<!DOCTYPE html> 
+<!DOCTYPE html>
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" /> 
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>APEX — Coach Performance</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
   <style>
@@ -236,7 +236,7 @@ function render(){
 
   const todayDateStr=new Date().toLocaleDateString("fr-FR");
   const todayISOStr=new Date().toISOString().slice(0,10);
-  const todayRow=deduped.find(r=>{const d=String(r.date||"");return d===todayDateStr||d.startsWith(todayISOStr)||d.includes(todayDateStr);})||deduped[deduped.length-1]||{};
+  const todayRow=deduped.find(r=>{const d=String(r.date||"");return d===todayDateStr||d.startsWith(todayISOStr)||d.includes(todayDateStr);})||{};
 
   const hrv=parseFloat(todayRow.HRV||state.checkinAnswers.hrv_matin||0)||0;
   const fcRepos=parseFloat(todayRow.FC_repos||0)||0;
