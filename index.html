@@ -25,6 +25,7 @@
 </div>
 <script>
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxzcjnZQyhtOpsO3jWZffwQHYBdvDI5Qi3USN4UhMJNMwpl2T6DyvNDFVFFuVCUOZFP5g/exec";
+const AI_ENABLED = false; // ← mettre true quand tout est en place
 
 const C = {
   bg:"#13141A", surface:"#1C1E26", card:"#22242E", border:"#2E3040",
@@ -179,26 +180,39 @@ async function sendCheckin(answers){
   catch(e){}
 }
 
-async function getAllAIAdvice(watchRow,checkinRow){
-  const prompt=`Tu es APEX, un coach de performance façon Whoop. Analyse ces données et réponds UNIQUEMENT en JSON valide, sans texte autour, sans markdown.
+async function getAllAIAdvice(watchRow,checkinRow,week){
+  const avgHRV = week.length ? Math.round(week.map(r=>parseFloat(r.HRV||0)||0).filter(v=>v>0).reduce((a,b)=>a+b,0)/week.filter(r=>parseFloat(r.HRV||0)>0).length||1) : 0;
+  const avgSleep = week.length ? Math.round(week.map(r=>parseFloat(r.sommeil_h||0)||0).filter(v=>v>0).reduce((a,b)=>a+b,0)/week.filter(r=>parseFloat(r.sommeil_h||0)>0).length*10||1)/10 : 0;
+  const avgFC = week.length ? Math.round(week.map(r=>parseFloat(r.FC_repos||0)||0).filter(v=>v>0).reduce((a,b)=>a+b,0)/week.filter(r=>parseFloat(r.FC_repos||0)>0).length||1) : 0;
 
-DONNÉES MONTRE:
-- HRV: ${watchRow.HRV||watchRow.hrv||checkinRow.hrv_matin||"N/A"}ms | FC repos: ${watchRow.FC_repos||watchRow.fc_repos||"N/A"}bpm
-- Sommeil: ${watchRow.sommeil_h||"N/A"}h | SpO2: ${watchRow.spo2||"N/A"}%
+  const prompt=`Tu es APEX, un coach de performance personnel pour Victor, 19 ans, coureur et cycliste. Analyse ses données et donne des conseils ULTRA-PRÉCIS et PERSONNALISÉS. Réponds UNIQUEMENT en JSON valide, sans texte autour.
+
+PROFIL: 19 ans, sports d'endurance (course à pied + cyclisme), montre Coros Pace 3
+
+DONNÉES DU JOUR:
+- HRV: ${watchRow.HRV||watchRow.hrv||checkinRow.hrv_matin||"N/A"}ms (moy 7j: ${avgHRV}ms)
+- FC repos: ${watchRow.FC_repos||watchRow.fc_repos||"N/A"}bpm (moy 7j: ${avgFC}bpm)
+- Sommeil: ${watchRow.sommeil_h||"N/A"}h (moy 7j: ${avgSleep}h)
+- SpO2: ${watchRow.spo2||"N/A"}%
 
 CHECK-IN MATIN:
 - Qualité sommeil: ${checkinRow.ressenti_sommeil||"N/A"}/5 | Énergie: ${checkinRow.energie||"N/A"}/5
 - Type réveil: ${checkinRow.type_reveil||"N/A"} | Humeur: ${checkinRow.humeur||"N/A"}/5
-- Stress: ${checkinRow.stress_veille||"N/A"}/5 | Anxiété coucher: ${checkinRow.anxiete_coucher||"N/A"}/5
+- Stress hier: ${checkinRow.stress_veille||"N/A"}/5 | Anxiété coucher: ${checkinRow.anxiete_coucher||"N/A"}/5
 - Caféine après 14h: ${checkinRow.caffeine||"N/A"} | Alcool: ${checkinRow.alcool||"N/A"}
 - Sport intense 3h avant coucher: ${checkinRow.sport_intense||"N/A"}
-- Écrans: ${checkinRow.ecrans||"N/A"} | Temp chambre: ${checkinRow.temperature_chambre||"N/A"}
+- Écrans avant dormir: ${checkinRow.ecrans||"N/A"} | Temp chambre: ${checkinRow.temperature_chambre||"N/A"}
 - Lumière naturelle: ${checkinRow.lumiere_naturelle||"N/A"} | Dernier repas: ${checkinRow.dernier_repas||"N/A"}
 
-Réponds avec exactement ce format JSON:
-{"recovery":{"score":<0-100>,"summary":"<1 phrase>","tips":["<conseil 1>","<conseil 2>","<conseil 3>"]},"sleep":{"score":<0-100>,"summary":"<1 phrase>","tips":["<conseil 1>","<conseil 2>","<conseil 3>"]},"training":{"score":<0-100>,"summary":"<1 phrase>","tips":["<conseil 1>","<conseil 2>","<conseil 3>"]},"nutrition":{"score":<0-100>,"summary":"<1 phrase>","tips":["<conseil 1>","<conseil 2>","<conseil 3>"]}}
+RÈGLES POUR LES CONSEILS:
+- Utilise les chiffres réels (ex: "ton HRV de 49ms est 8% sous ta moyenne")
+- Donne des heures précises (ex: "couche-toi avant 22h30")
+- Sois direct et concis, max 12 mots par conseil
+- Compare toujours à la moyenne 7j pour contextualiser
+- Adapte l'intensité d'entraînement selon le HRV du jour vs moyenne
 
-Scores cohérents avec les données. Conseils courts, directs, actionnables, en français.`;
+Réponds avec exactement ce format JSON:
+{"recovery":{"score":<0-100>,"summary":"<1 phrase avec chiffres>","tips":["<conseil précis 1>","<conseil précis 2>","<conseil précis 3>"]},"sleep":{"score":<0-100>,"summary":"<1 phrase avec chiffres>","tips":["<conseil précis 1>","<conseil précis 2>","<conseil précis 3>"]},"training":{"score":<0-100>,"summary":"<1 phrase avec chiffres>","tips":["<conseil précis 1>","<conseil précis 2>","<conseil précis 3>"]},"nutrition":{"score":<0-100>,"summary":"<1 phrase avec chiffres>","tips":["<conseil précis 1>","<conseil précis 2>","<conseil précis 3>"]}}`;
   try {
     const res=await fetch(APPS_SCRIPT_URL,{method:"POST",body:JSON.stringify({type:"ai",prompt})});
     const data=await res.json();
@@ -606,7 +620,7 @@ function render(){
           el("span",{style:{fontSize:"11px",color:C.sub}},"Analyse…")
         ));
       } else if(state.aiLoading===false && !state.aiData){
-        card.appendChild(el("div",{style:{fontSize:"11px",color:C.red,textAlign:"center",padding:"12px 0"}},"⚠ IA indisponible"));
+        card.appendChild(el("div",{style:{fontSize:"11px",color:C.sub,textAlign:"center",padding:"12px 0",lineHeight:"1.5"}},"⏳ En attente des\ndonnées du jour"));
       } else if(data){
         card.appendChild(el("div",{style:{display:"flex",flexDirection:"column",alignItems:"center",marginBottom:"12px"}},
           ringSVG(data.score||0,color,80),
@@ -653,13 +667,15 @@ function checkDone(){
 
 function loadAI(){
   if(!state.checkinDone) return;
+  if(!AI_ENABLED){ state.aiData=null; state.aiLoading=false; render(); return; }
   const today=new Date().toISOString().slice(0,10);
   const cacheKey="apex_ai_"+today;
   try{const c=localStorage.getItem(cacheKey);if(c){state.aiData=JSON.parse(c);state.aiLoading=false;render();return;}}catch(e){}
   state.aiData=null; state.aiLoading=true;
-  const deduped=Object.values(state.watchData.reduce((acc,r)=>{const k=String(r.date||"").substring(0,10);acc[k]=r;return acc;},{}));
-  const todayRow=deduped[deduped.length-1]||{};
-  getAllAIAdvice(todayRow,state.checkinAnswers).then(data=>{
+  const dedupedAI=Object.values(state.watchData.reduce((acc,r)=>{const k=String(r.date||"").substring(0,10);acc[k]=r;return acc;},{}));
+  const weekForAI=dedupedAI.slice(-7);
+  const todayRow=dedupedAI[dedupedAI.length-1]||{};
+  getAllAIAdvice(todayRow,state.checkinAnswers,weekForAI).then(data=>{
     state.aiData=data; state.aiLoading=false;
     try{if(data)localStorage.setItem(cacheKey,JSON.stringify(data));}catch(e){}
     render();
