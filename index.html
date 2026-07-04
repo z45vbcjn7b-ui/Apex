@@ -248,9 +248,9 @@ function render(){
   const week=deduped.slice(-7);
   const labels=week.map(r=>String(r.date||"").slice(5,10));
 
-  const todayDateStr=new Date().toLocaleDateString("fr-FR");
-  const todayISOStr=new Date().toISOString().slice(0,10);
-  const todayRow=deduped.find(r=>{const d=String(r.date||"");return d===todayDateStr||d.startsWith(todayISOStr)||d.includes(todayDateStr);})||{};
+  // Correction : on prend la dernière ligne dédupliquée (la plus récente),
+  // plutôt que de chercher une correspondance de format de date qui ne matchait jamais.
+  const todayRow = deduped[deduped.length-1] || {};
 
   const hrv=parseFloat(todayRow.HRV||state.checkinAnswers.hrv_matin||0)||0;
   const fcRepos=parseFloat(todayRow.FC_repos||0)||0;
