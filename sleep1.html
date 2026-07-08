@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>APEX — Sommeil</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@600;700;800&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+  <script src="shared.js"></script>
+  <style id="base-style"></style>
+</head>
+<body>
+<div id="root">
+  <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px">
+    <div style="width:40px;height:40px;border:3px solid #A78BFA;border-top-color:#7DD3E8;border-radius:50%;animation:spin 0.8s linear infinite"></div>
+    <div style="color:#8B8B99;font-size:14px">Chargement…</div>
+  </div>
+</div>
+<script>
+document.getElementById("base-style").textContent = BASE_STYLE;
+
+const PHASE_DEF = [
+  {key:"sommeil_profond", label:"Profond", color:C.purple, idx:0},
+  {key:"sommeil_leger",   label:"Léger",   color:C.cyan,   idx:1},
+  {key:"sommeil_paradoxal",label:"Paradoxal",color:C.green, idx:2},
+  {key:"sommeil_eveille", label:"Éveillé",  color:C.red,    idx:3},
+];
+
+let state = { loading:true, deduped:[], selectedKey:null };
+
+function hoursToHM(h){
+  if(!h) return "0h00";
+  const totalMin = Math.round(h*60);
+  return `${Math.floor(totalMin/60)}h${String(totalMin%60).padStart(2,"0")}`;
+}
+
+function renderDonutDetail(row){
+  const wrap = el("div",{style:{display:"flex",flexDirection:"column",alignItems:"center"}});
+  const segments = PHASE_DEF.map(p=>({...p, value: parseFloat(row[p.key]||0)||0}));
+  const totalSleep = segments.filter(s=>s.key!=="sommeil_eveille").reduce((a,s)=>a+s.value,0);
+  const hasData = segments.some(s=>s.value>0);
+
+  if(!hasData){
+    wrap.appendChild(el("div",{style:{padding:"40px 0",color:C.sub,fontSize:"13px",textAlign:"center"}},"Pas de détail de phases pour cette nuit"));
+    return wrap;
+  }
+
+  const donutWrap = el("div",{style:{position:"relative"}});
+  const donut = multiRingSVG(segments.filter(s=>s.value>0), 220, 26, hoursToHM(totalSleep), "sommeil total");
+  donutWrap.appendChild(donut);
+  wrap.appendChild(donutWrap);
+
+  const legend = el("div",{style:{display:"flex",flexWrap:"wrap",gap:"8px",justifyContent:"center",marginTop:"18px"}});
+  segments.forEach(s=>{
+    const pct = totalSleep>0 && s.key!=="sommeil_eveille" ? Math.round((s.value/totalSleep)*100) : (s.key==="sommeil_eveille" && s.value>0 ? null : null);
+    const item = el("div",{style:{display:"flex",alignItems:"center",gap:"6px",background:C.surface,borderRadius:"10px",padding:"6px 10px"}});
+    item.appendChild(el("div",{style:{width:"8px",height:"8px",borderRadius:"50%",background:s.color,flexShrink:"0"}}));
+    item.appendChild(el("div",{style:{fontSize:"11px",color:C.text}},
+      `${s.label} · ${hoursToHM(s.value)}` + (pct!==null?` (${pct}%)`:"")
+    ));
+    legend.appendChild(item);
+  });
+  wrap.appendChild(legend);
+  return wrap;
+}
+
+function render(){
+  const root=document.getElementById("root");
+  root.innerHTML="";
+
+  if(state.loading){
+    root.appendChild(el("div",{style:{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:"16px"}},
+      el("div",{style:{width:"40px",height:"40px",border:`3px solid ${C.purple}`,borderTopColor:C.cyan,borderRadius:"50%",animation:"spin 0.8s linear infinite"}}),
+      el("div",{style:{color:C.sub,fontSize:"14px"}},"Chargement…")));
+    return;
+  }
+
+  root.appendChild(navBar("sleep"));
+  const main=el("div",{style:{padding:"16px",maxWidth:"640px",margin:"0 auto",animation:"fadeIn 0.3s ease"}});
+
+  const week = state.deduped.slice(-7);
+  const selectedRow = week.find(r=>r._key===state.selectedKey) || week[week.length-1] || {};
+  const selectedLabel = selectedRow._key ? keyToLabel(selectedRow._key) : "—";
+
+  main.appendChild(el("div",{style:{marginBottom:"16px"}},
+    el("h1",{style:{fontFamily:"Syne,sans-serif",fontSize:"20px",fontWeight:"800"}},"Sommeil"),
+    el("div",{style:{fontSize:"12px",color:C.sub,fontFamily:"IBM Plex Mono,monospace",marginTop:"2px"}},selectedLabel)
+  ));
+
+  // Hero: donut interactif
+  const heroCard = el("div",{style:{background:C.card,borderRadius:"24px",padding:"24px 16px",marginBottom:"14px",display:"flex",justifyContent:"center"}});
+  heroCard.appendChild(renderDonutDetail(selectedRow));
+  main.appendChild(heroCard);
+
+  // Historique 7 jours — barres empilées cliquables
+  const histCard = el("div",{style:{background:C.card,borderRadius:"18px",padding:"16px",marginBottom:"14px"}});
+  histCard.appendChild(el("div",{style:{fontSize:"11px",fontWeight:"700",color:C.sub,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:"14px"}},"7 derniers jours — touche une barre"));
+
+  const barsRow = el("div",{style:{display:"flex",alignItems:"flex-end",gap:"8px",height:"140px"}});
+  const maxTotal = Math.max(...week.map(r=>PHASE_DEF.filter(p=>p.key!=="sommeil_eveille").reduce((a,p)=>a+(parseFloat(r[p.key]||0)||0),0)), 8);
+
+  week.forEach(r=>{
+    const isSelected = r._key===state.selectedKey || (!state.selectedKey && r===week[week.length-1]);
+    const col = el("div",{style:{flex:"1",display:"flex",flexDirection:"column",alignItems:"center",gap:"4px",cursor:"pointer"},
+      onClick:()=>{ state.selectedKey=r._key; render(); }});
+    const barTotal = PHASE_DEF.filter(p=>p.key!=="sommeil_eveille").reduce((a,p)=>a+(parseFloat(r[p.key]||0)||0),0);
+    const barHeight = Math.max(4, (barTotal/maxTotal)*108);
+    const stack = el("div",{style:{width:"100%",maxWidth:"28px",height:barHeight+"px",borderRadius:"6px",overflow:"hidden",display:"flex",flexDirection:"column-reverse",opacity:isSelected?"1":"0.55",border:isSelected?`1.5px solid ${C.text}`:"1.5px solid transparent",transition:"opacity 0.15s ease"}});
+    PHASE_DEF.filter(p=>p.key!=="sommeil_eveille").forEach(p=>{
+      const v = parseFloat(r[p.key]||0)||0;
+      if(v<=0) return;
+      const h = (v/barTotal)*100;
+      stack.appendChild(el("div",{style:{width:"100%",height:h+"%",background:p.color}}));
+    });
+    col.appendChild(stack);
+    col.appendChild(el("div",{style:{fontSize:"9px",color:isSelected?C.text:C.sub,fontFamily:"IBM Plex Mono,monospace",fontWeight:isSelected?"700":"400"}},keyToLabel(r._key)));
+    barsRow.appendChild(col);
+  });
+  histCard.appendChild(barsRow);
+  main.appendChild(histCard);
+
+  root.appendChild(main);
+}
+
+fetchAllData().then(({watch})=>{
+  state.deduped = dedupeByDay(watch);
+  state.loading = false;
+  render();
+});
+</script>
+</body>
+</html>

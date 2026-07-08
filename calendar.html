@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>APEX — Calendrier</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@600;700;800&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+  <script src="shared.js"></script>
+  <style id="base-style"></style>
+</head>
+<body>
+<div id="root">
+  <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px">
+    <div style="width:40px;height:40px;border:3px solid #A78BFA;border-top-color:#7DD3E8;border-radius:50%;animation:spin 0.8s linear infinite"></div>
+    <div style="color:#8B8B99;font-size:14px">Chargement…</div>
+  </div>
+</div>
+<script>
+document.getElementById("base-style").textContent = BASE_STYLE;
+
+const MONTH_NAMES = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+const DOW = ["L","M","M","J","V","S","D"];
+
+let state = { loading:true, byKey:{}, viewYear:0, viewMonth:0, selectedKey:null };
+
+function render(){
+  const root=document.getElementById("root");
+  root.innerHTML="";
+
+  if(state.loading){
+    root.appendChild(el("div",{style:{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:"16px"}},
+      el("div",{style:{width:"40px",height:"40px",border:`3px solid ${C.purple}`,borderTopColor:C.cyan,borderRadius:"50%",animation:"spin 0.8s linear infinite"}}),
+      el("div",{style:{color:C.sub,fontSize:"14px"}},"Chargement…")));
+    return;
+  }
+
+  root.appendChild(navBar("calendar"));
+  const main=el("div",{style:{padding:"16px",maxWidth:"640px",margin:"0 auto",animation:"fadeIn 0.3s ease"}});
+
+  // Header mois + navigation
+  const header = el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"16px"}});
+  header.appendChild(el("button",{style:{background:C.card,border:"none",borderRadius:"10px",width:"36px",height:"36px",color:C.text,fontSize:"16px"},
+    onClick:()=>{ state.viewMonth--; if(state.viewMonth<0){state.viewMonth=11;state.viewYear--;} render(); }},"‹"));
+  header.appendChild(el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:"18px",fontWeight:"800"}},`${MONTH_NAMES[state.viewMonth]} ${state.viewYear}`));
+  header.appendChild(el("button",{style:{background:C.card,border:"none",borderRadius:"10px",width:"36px",height:"36px",color:C.text,fontSize:"16px"},
+    onClick:()=>{ state.viewMonth++; if(state.viewMonth>11){state.viewMonth=0;state.viewYear++;} render(); }},"›"));
+  main.appendChild(header);
+
+  // Grille jours de la semaine
+  const dowRow = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"4px",marginBottom:"6px"}});
+  DOW.forEach(d=>dowRow.appendChild(el("div",{style:{textAlign:"center",fontSize:"10px",color:C.sub,fontWeight:"700"}},d)));
+  main.appendChild(dowRow);
+
+  // Calcul du calendrier
+  const firstOfMonth = new Date(state.viewYear, state.viewMonth, 1);
+  const startWeekday = (firstOfMonth.getDay()+6)%7; // lundi=0
+  const daysInMonth = new Date(state.viewYear, state.viewMonth+1, 0).getDate();
+
+  const grid = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"4px",marginBottom:"16px"}});
+  for(let i=0;i<startWeekday;i++) grid.appendChild(el("div"));
+  for(let d=1; d<=daysInMonth; d++){
+    const key = `${state.viewYear}-${String(state.viewMonth+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+    const row = state.byKey[key];
+    const score = row ? computeRecovery(row) : null;
+    const color = score!==null ? scoreColor(score) : C.border;
+    const isSelected = key===state.selectedKey;
+    const isToday = key === new Date().toISOString().slice(0,10);
+    const cell = el("div",{style:{
+        aspectRatio:"1", borderRadius:"10px", display:"flex", alignItems:"center", justifyContent:"center",
+        background: score!==null ? `${color}26` : C.surface,
+        border: isSelected?`2px solid ${C.text}`:isToday?`1.5px solid ${C.sub}`:`1px solid ${C.border}`,
+        cursor: row?"pointer":"default", position:"relative"
+      },
+      onClick: row ? ()=>{ state.selectedKey = isSelected ? null : key; render(); } : undefined
+    });
+    if(score!==null){
+      cell.appendChild(el("div",{style:{position:"absolute",top:"4px",left:"50%",transform:"translateX(-50%)",width:"5px",height:"5px",borderRadius:"50%",background:color}}));
+    }
+    cell.appendChild(el("div",{style:{fontSize:"11px",fontFamily:"IBM Plex Mono,monospace",color: score!==null?C.text:C.sub, marginTop:score!==null?"6px":"0"}},String(d)));
+    grid.appendChild(cell);
+  }
+  main.appendChild(grid);
+
+  // Légende
+  const legend = el("div",{style:{display:"flex",gap:"14px",justifyContent:"center",marginBottom:"16px"}});
+  [{c:C.green,l:"Bonne"},{c:C.amber,l:"Moyenne"},{c:C.red,l:"Faible"}].forEach(x=>{
+    legend.appendChild(el("div",{style:{display:"flex",alignItems:"center",gap:"5px"}},
+      el("div",{style:{width:"7px",height:"7px",borderRadius:"50%",background:x.c}}),
+      el("span",{style:{fontSize:"10px",color:C.sub}},x.l)
+    ));
+  });
+  main.appendChild(legend);
+
+  // Panneau détail jour sélectionné
+  if(state.selectedKey && state.byKey[state.selectedKey]){
+    const row = state.byKey[state.selectedKey];
+    const score = computeRecovery(row);
+    const color = scoreColor(score);
+    const detail = el("div",{style:{background:C.card,borderRadius:"18px",padding:"16px",animation:"fadeIn 0.2s ease"}});
+    detail.appendChild(el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"14px"}},
+      el("div",{style:{fontSize:"13px",fontWeight:"700",fontFamily:"IBM Plex Mono,monospace"}},keyToLabel(state.selectedKey)),
+      el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:"20px",fontWeight:"800",color}},Math.round(score)+"%")
+    ));
+    const statsRow = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"8px"}});
+    [
+      {l:"HRV",v:parseFloat(row.HRV||0)||0,u:"ms"},
+      {l:"FC repos",v:parseFloat(row.FC_repos||0)||0,u:"bpm"},
+      {l:"Sommeil",v:parseFloat(row.sommeil_h||0)||0,u:"h"},
+    ].forEach(s=>{
+      statsRow.appendChild(el("div",{style:{background:C.surface,borderRadius:"12px",padding:"10px",textAlign:"center"}},
+        el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:"15px",fontWeight:"800"}},(s.v||"—")+(s.v?" "+s.u:"")),
+        el("div",{style:{fontSize:"9px",color:C.sub,marginTop:"3px",fontWeight:"700"}},s.l)
+      ));
+    });
+    detail.appendChild(statsRow);
+    main.appendChild(detail);
+  }
+
+  root.appendChild(main);
+}
+
+fetchAllData().then(({watch})=>{
+  const deduped = dedupeByDay(watch);
+  const byKey = {};
+  deduped.forEach(r=>{ byKey[r._key]=r; });
+  state.byKey = byKey;
+  const now = new Date();
+  state.viewYear = now.getFullYear();
+  state.viewMonth = now.getMonth();
+  state.loading = false;
+  render();
+});
+</script>
+</body>
+</html>

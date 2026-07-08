@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>APEX — Tendances</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@600;700;800&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+  <script src="shared.js"></script>
+  <style id="base-style"></style>
+</head>
+<body>
+<div id="root">
+  <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px">
+    <div style="width:40px;height:40px;border:3px solid #A78BFA;border-top-color:#7DD3E8;border-radius:50%;animation:spin 0.8s linear infinite"></div>
+    <div style="color:#8B8B99;font-size:14px">Chargement…</div>
+  </div>
+</div>
+<script>
+document.getElementById("base-style").textContent = BASE_STYLE;
+
+let state = { loading:true, deduped:[], selectedPointKey:null, rangeStart:0, rangeEnd:0 };
+
+function quadrantInfo(load,recov){
+  if(recov>=60 && load<=50) return {label:"Prêt à performer", color:C.green};
+  if(recov>=60 && load>50) return {label:"Charge bien gérée", color:C.cyan};
+  if(recov<60 && load<=50) return {label:"Récupération partielle", color:C.amber};
+  return {label:"Risque de surcharge", color:C.red};
+}
+
+function renderScatter(days){
+  const card = el("div",{style:{background:C.card,borderRadius:"18px",padding:"16px",marginBottom:"14px"}});
+  card.appendChild(el("div",{style:{fontSize:"11px",fontWeight:"700",color:C.sub,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:"4px"}},"Charge vs Récupération"));
+  card.appendChild(el("div",{style:{fontSize:"10px",color:C.sub,marginBottom:"14px"}},"30 derniers jours — touche un point"));
+
+  const plotSize = 260;
+  const plotWrap = el("div",{style:{position:"relative",width:"100%",maxWidth:plotSize+"px",margin:"0 auto",aspectRatio:"1"}});
+
+  // quadrants
+  const quadGrid = el("div",{style:{position:"absolute",inset:"0",display:"grid",gridTemplateColumns:"1fr 1fr",gridTemplateRows:"1fr 1fr",borderRadius:"12px",overflow:"hidden"}});
+  [
+    {bg:`${C.cyan}14`},{bg:`${C.red}10`},
+    {bg:`${C.green}14`},{bg:`${C.amber}10`},
+  ].forEach(q=>quadGrid.appendChild(el("div",{style:{background:q.bg}})));
+  plotWrap.appendChild(quadGrid);
+
+  // axes lines
+  const axisV = el("div",{style:{position:"absolute",left:"50%",top:"0",bottom:"0",width:"1px",background:C.border}});
+  const axisH = el("div",{style:{position:"absolute",top:"50%",left:"0",right:"0",height:"1px",background:C.border}});
+  plotWrap.appendChild(axisV); plotWrap.appendChild(axisH);
+
+  days.forEach(r=>{
+    const load = computeLoad(r);
+    const recov = computeRecovery(r);
+    if(load<=0 && recov<=0) return;
+    const q = quadrantInfo(load,recov);
+    const isSelected = r._key===state.selectedPointKey;
+    const dot = el("div",{style:{
+        position:"absolute", width: isSelected?"14px":"9px", height: isSelected?"14px":"9px",
+        borderRadius:"50%", background:q.color, border:isSelected?`2px solid ${C.text}`:"none",
+        left:`calc(${load}% - ${isSelected?7:4.5}px)`, top:`calc(${100-recov}% - ${isSelected?7:4.5}px)`,
+        cursor:"pointer", transition:"all 0.15s ease", zIndex: isSelected?"5":"1"
+      },
+      onClick:(e)=>{ e.stopPropagation(); state.selectedPointKey = isSelected?null:r._key; render(); }
+    });
+    plotWrap.appendChild(dot);
+  });
+  card.appendChild(plotWrap);
+
+  // labels quadrants
+  const labelGrid = el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px",marginTop:"14px"}});
+  [
+    {l:"Prêt à performer",c:C.green},{l:"Charge bien gérée",c:C.cyan},
+    {l:"Récupération partielle",c:C.amber},{l:"Risque de surcharge",c:C.red},
+  ].forEach(x=>{
+    labelGrid.appendChild(el("div",{style:{display:"flex",alignItems:"center",gap:"5px"}},
+      el("div",{style:{width:"7px",height:"7px",borderRadius:"50%",background:x.c,flexShrink:"0"}}),
+      el("span",{style:{fontSize:"9.5px",color:C.sub}},x.l)
+    ));
+  });
+  card.appendChild(labelGrid);
+
+  // détail du point sélectionné
+  const sel = days.find(r=>r._key===state.selectedPointKey);
+  if(sel){
+    const load = computeLoad(sel), recov = computeRecovery(sel);
+    const q = quadrantInfo(load,recov);
+    const detail = el("div",{style:{marginTop:"14px",background:C.surface,borderRadius:"12px",padding:"12px",display:"flex",alignItems:"center",justifyContent:"space-between"}});
+    detail.appendChild(el("div",{},
+      el("div",{style:{fontSize:"12px",fontWeight:"700",fontFamily:"IBM Plex Mono,monospace"}},keyToLabel(sel._key)),
+      el("div",{style:{fontSize:"10px",color:q.color,fontWeight:"700",marginTop:"2px"}},q.label)
+    ));
+    detail.appendChild(el("div",{style:{display:"flex",gap:"14px"}},
+      el("div",{style:{textAlign:"center"}}, el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:"14px",fontWeight:"800"}},Math.round(recov)+"%"), el("div",{style:{fontSize:"8px",color:C.sub}},"RÉCUP")),
+      el("div",{style:{textAlign:"center"}}, el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:"14px",fontWeight:"800"}},Math.round(load)+"%"), el("div",{style:{fontSize:"8px",color:C.sub}},"CHARGE"))
+    ));
+    card.appendChild(detail);
+  }
+
+  return card;
+}
+
+function renderHRVExplorer(days){
+  const hrvDays = days.filter(r=>(parseFloat(r.HRV||0)||0)>0);
+  const card = el("div",{style:{background:C.card,borderRadius:"18px",padding:"16px"}});
+  card.appendChild(el("div",{style:{fontSize:"11px",fontWeight:"700",color:C.sub,letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:"4px"}},"Explorateur HRV"));
+
+  if(hrvDays.length<2){
+    card.appendChild(el("div",{style:{fontSize:"12px",color:C.sub,padding:"20px 0",textAlign:"center"}},"Pas assez de données HRV pour explorer une tendance"));
+    return card;
+  }
+
+  if(state.rangeEnd===0 || state.rangeEnd>=hrvDays.length){ state.rangeStart=0; state.rangeEnd=hrvDays.length-1; }
+
+  const selected = hrvDays.slice(state.rangeStart, state.rangeEnd+1);
+  const vals = selected.map(r=>parseFloat(r.HRV));
+  const avg = Math.round(vals.reduce((a,b)=>a+b,0)/vals.length);
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const trend = vals.length>1 ? Math.round((vals[vals.length-1]-vals[0])*10)/10 : 0;
+
+  card.appendChild(el("div",{style:{fontSize:"10px",color:C.sub,marginBottom:"14px"}},
+    `${keyToLabel(selected[0]._key)} → ${keyToLabel(selected[selected.length-1]._key)} · glisse les poignées pour zoomer`
+  ));
+
+  const statsRow = el("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"8px",marginBottom:"14px"}});
+  [
+    {l:"Moyenne",v:avg,u:"ms",c:C.purple},
+    {l:"Min",v:Math.round(min),u:"ms",c:C.sub},
+    {l:"Max",v:Math.round(max),u:"ms",c:C.sub},
+    {l:"Tendance",v:(trend>0?"+":"")+trend,u:"ms",c:trend>0?C.green:trend<0?C.red:C.sub},
+  ].forEach(s=>{
+    statsRow.appendChild(el("div",{style:{background:C.surface,borderRadius:"10px",padding:"8px 4px",textAlign:"center"}},
+      el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:"13px",fontWeight:"800",color:s.c}},s.v+" "+s.u),
+      el("div",{style:{fontSize:"8px",color:C.sub,marginTop:"2px",fontWeight:"700"}},s.l)
+    ));
+  });
+  card.appendChild(statsRow);
+
+  // Graphique ligne (zoomé sur la sélection)
+  const chartH = 90, chartW = 300;
+  const svgWrap = el("div",{style:{width:"100%"}});
+  const svg = document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("viewBox",`0 0 ${chartW} ${chartH}`);
+  svg.setAttribute("width","100%"); svg.setAttribute("height",chartH);
+  svg.style.overflow="visible";
+  const maxV = Math.max(...vals), minV = Math.min(...vals);
+  const pts = vals.map((v,i)=>{
+    const x = (i/(vals.length-1||1))*chartW;
+    const y = chartH - ((v-minV)/((maxV-minV)||1))*(chartH-10) - 5;
+    return `${x},${y}`;
+  }).join(" ");
+  svg.innerHTML = `<polyline points="${pts}" fill="none" stroke="${C.purple}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+  const lastPt = pts.split(" ").pop().split(",");
+  svg.innerHTML += `<circle cx="${lastPt[0]}" cy="${lastPt[1]}" r="4" fill="${C.cyan}"/>`;
+  svgWrap.appendChild(svg);
+  card.appendChild(svgWrap);
+
+  // Brush (mini timeline avec poignées)
+  const brushWrap = el("div",{style:{position:"relative",height:"36px",marginTop:"12px",background:C.surface,borderRadius:"8px"}});
+  const n = hrvDays.length;
+  const startPct = (state.rangeStart/(n-1))*100;
+  const endPct = (state.rangeEnd/(n-1))*100;
+
+  const selectedBg = el("div",{style:{position:"absolute",top:"0",bottom:"0",left:startPct+"%",width:(endPct-startPct)+"%",background:`${C.purple}33`,borderRadius:"6px"}});
+  brushWrap.appendChild(selectedBg);
+
+  function makeHandle(isStart){
+    const handle = el("div",{style:{
+      position:"absolute", top:"-4px", width:"16px", height:"44px", borderRadius:"8px",
+      background:C.purple, left:`calc(${isStart?startPct:endPct}% - 8px)`, cursor:"ew-resize", touchAction:"none"
+    }});
+    let dragging = false;
+    const onMove = (clientX)=>{
+      const rect = brushWrap.getBoundingClientRect();
+      let pct = ((clientX-rect.left)/rect.width)*100;
+      pct = Math.max(0,Math.min(100,pct));
+      let idx = Math.round((pct/100)*(n-1));
+      if(isStart){ idx = Math.min(idx, state.rangeEnd-1); state.rangeStart = Math.max(0,idx); }
+      else { idx = Math.max(idx, state.rangeStart+1); state.rangeEnd = Math.min(n-1,idx); }
+      render();
+    };
+    handle.addEventListener("pointerdown",(e)=>{ dragging=true; e.target.setPointerCapture(e.pointerId); });
+    handle.addEventListener("pointermove",(e)=>{ if(dragging) onMove(e.clientX); });
+    handle.addEventListener("pointerup",()=>{ dragging=false; });
+    return handle;
+  }
+  brushWrap.appendChild(makeHandle(true));
+  brushWrap.appendChild(makeHandle(false));
+  card.appendChild(brushWrap);
+
+  card.appendChild(el("button",{style:{marginTop:"12px",width:"100%",padding:"8px",borderRadius:"10px",border:`1px solid ${C.border}`,background:"none",color:C.sub,fontSize:"11px"},
+    onClick:()=>{ state.rangeStart=0; state.rangeEnd=n-1; render(); }
+  },"Réinitialiser le zoom"));
+
+  return card;
+}
+
+function render(){
+  const root=document.getElementById("root");
+  root.innerHTML="";
+
+  if(state.loading){
+    root.appendChild(el("div",{style:{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:"16px"}},
+      el("div",{style:{width:"40px",height:"40px",border:`3px solid ${C.purple}`,borderTopColor:C.cyan,borderRadius:"50%",animation:"spin 0.8s linear infinite"}}),
+      el("div",{style:{color:C.sub,fontSize:"14px"}},"Chargement…")));
+    return;
+  }
+
+  root.appendChild(navBar("trends"));
+  const main=el("div",{style:{padding:"16px",maxWidth:"640px",margin:"0 auto",animation:"fadeIn 0.3s ease"}});
+  main.appendChild(el("h1",{style:{fontFamily:"Syne,sans-serif",fontSize:"20px",fontWeight:"800",marginBottom:"16px"}},"Tendances"));
+
+  const last30 = state.deduped.slice(-30);
+  main.appendChild(renderScatter(last30));
+  main.appendChild(renderHRVExplorer(state.deduped));
+
+  root.appendChild(main);
+}
+
+fetchAllData().then(({watch})=>{
+  state.deduped = dedupeByDay(watch);
+  state.loading = false;
+  render();
+});
+</script>
+</body>
+</html>
