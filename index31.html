@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>APEX — Coach Performance</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@600;700;800&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+  <script src="shared.js"></script>
+  <style id="base-style"></style>
+</head>
+<body>
+<div id="root">
+  <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px">
+    <div style="width:40px;height:40px;border:3px solid #A78BFA;border-top-color:#7DD3E8;border-radius:50%;animation:spin 0.8s linear infinite"></div>
+    <div style="color:#8B8B99;font-size:14px">Chargement APEX…</div>
+  </div>
+</div>
+<script>
+document.getElementById("base-style").textContent = BASE_STYLE;
+
+const QUESTIONS = [
+  {id:"hrv_matin",type:"number",label:"HRV ce matin ?",emoji:"💓",placeholder:"Ex: 58",unit:"ms"},
+  {id:"ressenti_sommeil",type:"scale",label:"Qualité du sommeil ?",emoji:"🌙",scale:["Très mal","Mal","Moyen","Bien","Excellent"]},
+  {id:"energie",type:"scale",label:"Énergie au réveil ?",emoji:"⚡",scale:["Épuisé","Fatigué","Correct","Énergique","Boosté"]},
+  {id:"type_reveil",type:"choice",label:"Type de réveil ?",emoji:"⏰",choices:["Naturellement","Réveil programmé","Perturbation"]},
+  {id:"stress_veille",type:"scale",label:"Stress hier ?",emoji:"🧠",scale:["Nul","Léger","Modéré","Élevé","Intense"]},
+  {id:"anxiete_coucher",type:"scale",label:"Anxiété avant de dormir ?",emoji:"😰",scale:["Aucune","Légère","Modérée","Élevée","Intense"]},
+  {id:"caffeine",type:"bool",label:"Caféine après 14h ?",emoji:"☕"},
+  {id:"alcool",type:"bool",label:"Alcool hier soir ?",emoji:"🍷"},
+  {id:"sport_intense",type:"bool",label:"Sport intense dans les 3h avant le coucher ?",emoji:"🏃"},
+  {id:"ecrans",type:"scale",label:"Écrans avant de dormir ?",emoji:"📱",scale:["Aucun","< 30min","30-60min","1-2h","> 2h"]},
+  {id:"temperature_chambre",type:"choice",label:"Température de la chambre ?",emoji:"🌡️",choices:["Froide","Tempérée","Chaude"]},
+  {id:"lumiere_naturelle",type:"scale",label:"Exposition lumière naturelle hier ?",emoji:"☀️",scale:["Aucune","< 30min","30min-1h","1-2h","> 2h"]},
+  {id:"dernier_repas",type:"scale",label:"Heure du dernier repas ?",emoji:"🍽️",scale:["> 21h","20-21h","19-20h","18-19h","< 18h"]},
+  {id:"sport_veille",type:"bool",label:"Sport hier ?",emoji:"🏋️"},
+  {id:"humeur",type:"scale",label:"Humeur ce matin ?",emoji:"😊",scale:["Déprimé","Triste","Neutre","Positif","Euphorique"]},
+];
+
+let state = {
+  watchData:[], checkinData:[], loading:true,
+  checkinDone:false, checkinAnswers:{}, checkinCurrentAnswers:{},
+  aiData:null, aiLoading:null,
+  realAge:null, showAgeInput:false
+};
+
+async function sendCheckin(answers){
+  try { await fetch(APPS_SCRIPT_URL,{method:"POST",body:JSON.stringify({type:"checkin",date:new Date().toLocaleDateString("fr-FR"),...answers})}); }
+  catch(e){}
+}
+
+async function getAllAIAdvice(watchRow,checkinRow,week){
+  const avgHRV = week.length ? Math.round(week.map(r=>parseFloat(r.HRV||0)||0).filter(v=>v>0).reduce((a,b)=>a+b,0)/(week.filter(r=>parseFloat(r.HRV||0)>0).length||1)) : 0;
+  const avgSleep = week.length ? Math.round(week.map(r=>parseFloat(r.sommeil_h||0)||0).filter(v=>v>0).reduce((a,b)=>a+b,0)/(week.filter(r=>parseFloat(r.sommeil_h||0)>0).length||1)*10)/10 : 0;
+  const avgFC = week.length ? Math.round(week.map(r=>parseFloat(r.FC_repos||0)||0).filter(v=>v>0).reduce((a,b)=>a+b,0)/(week.filter(r=>parseFloat(r.FC_repos||0)>0).length||1)) : 0;
+
+  const prompt=`Tu es APEX, un coach de performance personnel pour Victor, 19 ans, coureur et cycliste. Analyse ses données et donne des conseils ULTRA-PRÉCIS et PERSONNALISÉS. Réponds UNIQUEMENT en JSON valide, sans texte autour.
+
+DONNÉES DU JOUR:
+- HRV: ${watchRow.HRV||checkinRow.hrv_matin||"N/A"}ms (moy 7j: ${avgHRV}ms)
+- FC repos: ${watchRow.FC_repos||"N/A"}bpm (moy 7j: ${avgFC}bpm)
+- Sommeil: ${watchRow.sommeil_h||"N/A"}h (moy 7j: ${avgSleep}h)
+
+CHECK-IN MATIN:
+- Qualité sommeil: ${checkinRow.ressenti_sommeil||"N/A"}/5 | Énergie: ${checkinRow.energie||"N/A"}/5
+- Stress hier: ${checkinRow.stress_veille||"N/A"}/5 | Alcool: ${checkinRow.alcool||"N/A"}
+- Écrans avant dormir: ${checkinRow.ecrans||"N/A"} | Dernier repas: ${checkinRow.dernier_repas||"N/A"}
+
+RÈGLES: chiffres réels, heures précises, conseils directs (max 12 mots), toujours comparer à la moyenne 7j.
+
+Réponds avec exactement ce format JSON:
+{"recovery":{"score":<0-100>,"summary":"<1 phrase>","tips":["<t1>","<t2>","<t3>"]},"sleep":{"score":<0-100>,"summary":"<1 phrase>","tips":["<t1>","<t2>","<t3>"]},"training":{"score":<0-100>,"summary":"<1 phrase>","tips":["<t1>","<t2>","<t3>"]},"nutrition":{"score":<0-100>,"summary":"<1 phrase>","tips":["<t1>","<t2>","<t3>"]}}`;
+  try {
+    const res=await fetch(APPS_SCRIPT_URL,{method:"POST",body:JSON.stringify({type:"ai",prompt})});
+    const data=await res.json();
+    const clean=(data.text||"").replace(/```json|```/g,"").trim();
+    return JSON.parse(clean);
+  } catch(e){return null;}
+}
+
+function render(){
+  const root=document.getElementById("root");
+  root.innerHTML="";
+
+  if(state.loading){
+    root.appendChild(el("div",{style:{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:"16px"}},
+      el("div",{style:{width:"40px",height:"40px",border:`3px solid ${C.purple}`,borderTopColor:C.cyan,borderRadius:"50%",animation:"spin 0.8s linear infinite"}}),
+      el("div",{style:{color:C.sub,fontSize:"14px"}},"Chargement APEX…")
+    ));
+    return;
+  }
+
+  const deduped = dedupeByDay(state.watchData);
+  const week = deduped.slice(-7);
+  const todayRow = deduped[deduped.length-1] || {};
+
+  const hrv=parseFloat(todayRow.HRV||state.checkinAnswers.hrv_matin||0)||0;
+  const fcRepos=parseFloat(todayRow.FC_repos||0)||0;
+  const sommeilH=parseFloat(todayRow.sommeil_h||0)||0;
+  const globalScore = computeRecovery(todayRow);
+
+  root.appendChild(navBar("today"));
+
+  const main=el("div",{style:{padding:"16px",maxWidth:"640px",margin:"0 auto",animation:"fadeIn 0.3s ease"}});
+
+  const hour=new Date().getHours();
+  const greeting=hour<12?"Bonjour":hour<18?"Bon après-midi":"Bonsoir";
+  main.appendChild(el("div",{style:{marginBottom:"20px"}},
+    el("h1",{style:{fontFamily:"Syne,sans-serif",fontSize:"22px",fontWeight:"800",marginBottom:"2px"}},greeting),
+    el("div",{style:{fontSize:"12px",color:C.sub,fontFamily:"IBM Plex Mono,monospace"}},new Date().toLocaleDateString("fr-FR",{weekday:"long",day:"numeric",month:"long"})+" · "+(deduped.length>0?deduped.length+"j de données":"aucune donnée"))
+  ));
+
+  // ─── HERO RÉCUPÉRATION (signature) ───
+  const heroColor = scoreColor(globalScore);
+  const hero = el("div",{style:{background:`radial-gradient(circle at 50% 0%, ${heroColor}18, ${C.card} 60%)`,border:`1px solid ${C.border}`,borderRadius:"28px",padding:"28px 20px",marginBottom:"14px",display:"flex",flexDirection:"column",alignItems:"center"}});
+  hero.appendChild(el("div",{style:{fontSize:"11px",fontWeight:"700",color:C.sub,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:"14px"}},"Récupération"));
+  hero.appendChild(ringSVG(globalScore, heroColor, 176, null, 12));
+  hero.appendChild(el("div",{style:{marginTop:"14px",fontSize:"13px",color:C.sub,textAlign:"center",maxWidth:"280px",lineHeight:"1.5"}},
+    globalScore>=70?"Ton corps est prêt à performer aujourd'hui.":globalScore>=40?"Récupération partielle — reste à l'écoute de ton corps.":"Repos recommandé aujourd'hui."
+  ));
+  main.appendChild(hero);
+
+  // ─── 3 anneaux secondaires ───
+  const kpiGrid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"10px",marginBottom:"12px"}});
+  [
+    {icon:"🌙",label:"Sommeil",value:sommeilH?sommeilH.toFixed(1):"—",unit:"h",color:C.cyan,pct:sommeilH?Math.min(100,Math.round((sommeilH/8)*100)):0,href:"sleep.html"},
+    {icon:"💓",label:"HRV",value:hrv||"—",unit:"ms",color:C.purple,pct:hrv?Math.min(100,Math.round((hrv/80)*100)):0,customLabel:String(hrv||"—"),href:"trends.html"},
+    {icon:"❤️",label:"FC repos",value:fcRepos||"—",unit:"bpm",color:C.amber,pct:fcRepos?Math.max(0,Math.min(100,100-((fcRepos-45)/(80-45))*100)):0,customLabel:String(fcRepos||"—"),href:"trends.html"},
+  ].forEach(m=>{
+    const card=el("a",{href:m.href,style:{textDecoration:"none",color:"inherit",background:C.card,borderRadius:"16px",padding:"12px 6px",display:"flex",flexDirection:"column",alignItems:"center",gap:"4px"}});
+    card.appendChild(ringSVG(m.pct,m.color,64,m.customLabel||null));
+    card.appendChild(el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:"14px",fontWeight:"800",color:C.text,marginTop:"2px"}},m.value+(m.unit&&typeof m.value==="number"?" "+m.unit:"")));
+    card.appendChild(el("div",{style:{fontSize:"9px",fontWeight:"700",color:C.sub,letterSpacing:"0.04em",textTransform:"uppercase"}},m.label));
+    kpiGrid.appendChild(card);
+  });
+  main.appendChild(kpiGrid);
+
+  // ─── Métriques avancées ───
+  {
+    const ba = bioAge(hrv,fcRepos,sommeilH,state.realAge);
+    const baColor = ba<=28?C.green:ba<=38?C.cyan:ba<=48?C.amber:C.red;
+    const sleepVals = week.map(r=>parseFloat(r.sommeil_h||0)||0).filter(v=>v>0);
+    const avgSleep = sleepVals.length ? sleepVals.reduce((a,b)=>a+b,0)/sleepVals.length : 0;
+    const sleepDebt = sleepVals.length ? Math.max(0, Math.round((8-avgSleep)*sleepVals.length*10)/10) : null;
+    const recovRatio = hrv>0&&fcRepos>0 ? Math.round((hrv/fcRepos)*10)/10 : null;
+
+    const advSection = el("div",{style:{background:C.card,borderRadius:"18px",padding:"16px",marginBottom:"12px"}});
+    advSection.appendChild(el("div",{style:{fontSize:"11px",fontWeight:"700",color:C.sub,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:"14px"}},"Métriques avancées"));
+    const advGrid = el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px"}});
+
+    const metricTile = (emoji,label,value,unit,color,sub)=>{
+      const tile=el("div",{style:{background:C.surface,borderRadius:"14px",padding:"12px"}});
+      tile.appendChild(el("div",{style:{fontSize:"16px",marginBottom:"4px"}},emoji));
+      tile.appendChild(el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:"18px",fontWeight:"800",color:color||C.text}},value!==null?String(value)+(unit?" "+unit:""):"—"));
+      tile.appendChild(el("div",{style:{fontSize:"10px",fontWeight:"700",color:C.sub,marginTop:"2px"}},label));
+      if(sub) tile.appendChild(el("div",{style:{fontSize:"9px",color:C.sub,marginTop:"2px",lineHeight:"1.3"}},sub));
+      return tile;
+    };
+
+    const baTile = el("div",{style:{background:C.surface,borderRadius:"14px",padding:"12px"}});
+    baTile.appendChild(el("div",{style:{fontSize:"16px",marginBottom:"4px"}},"🧬"));
+    baTile.appendChild(el("div",{style:{fontFamily:"Syne,sans-serif",fontSize:"18px",fontWeight:"800",color:baColor}},ba+" ans"));
+    baTile.appendChild(el("div",{style:{fontSize:"10px",fontWeight:"700",color:C.sub,marginTop:"2px"}},"Âge biologique"));
+    if(state.realAge){
+      const diff = state.realAge - ba;
+      const diffColor = diff>0?C.green:diff<0?C.red:C.sub;
+      baTile.appendChild(el("div",{style:{fontSize:"9px",color:diffColor,marginTop:"4px",fontWeight:"700"}},diff>0?`${diff} ans plus jeune`:diff<0?`${Math.abs(diff)} ans plus vieux`:"= ton âge réel"));
+    } else {
+      baTile.appendChild(el("button",{style:{fontSize:"9px",color:C.purple,marginTop:"4px",background:"none",border:"none",padding:"0",textDecoration:"underline"},onClick:()=>{state.showAgeInput=true;render();}},"Entrer mon âge réel"));
+    }
+    advGrid.appendChild(baTile);
+    advGrid.appendChild(metricTile("😴","Dette de sommeil",sleepDebt,"h",sleepDebt!==null?(sleepDebt<3?C.green:sleepDebt<7?C.amber:C.red):C.sub,"vs 8h/nuit sur 7j"));
+    advGrid.appendChild(metricTile("💫","Ratio HRV/FC",recovRatio,"",recovRatio!==null?(recovRatio>1?C.green:recovRatio>0.6?C.amber:C.red):C.sub,"Équilibre nerveux/cardio"));
+    advGrid.appendChild(el("a",{href:"sleep.html",style:{textDecoration:"none",color:"inherit"}},
+      metricTile("🌊","Détail sommeil",null,null,C.cyan,"Voir les phases →")
+    ));
+    advSection.appendChild(advGrid);
+    main.appendChild(advSection);
+  }
+
+  // ─── MODAL ÂGE RÉEL ───
+  if(state.showAgeInput){
+    const overlay=el("div",{style:{position:"fixed",inset:"0",background:"#000000AA",zIndex:"200",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px"}});
+    const box=el("div",{style:{background:C.surface,borderRadius:"24px",padding:"28px 24px",width:"100%",maxWidth:"320px",textAlign:"center"}});
+    box.appendChild(el("div",{style:{fontSize:"32px",marginBottom:"12px"}},"🧬"));
+    box.appendChild(el("h2",{style:{fontFamily:"Syne,sans-serif",fontSize:"18px",fontWeight:"800",marginBottom:"8px"}},"Ton âge réel ?"));
+    const inp=document.createElement("input");
+    inp.type="number"; inp.placeholder="Ex: 28"; inp.min="10"; inp.max="100";
+    Object.assign(inp.style,{width:"100%",padding:"12px 14px",borderRadius:"12px",border:`1px solid ${C.border}`,background:C.card,color:C.text,fontSize:"20px",fontFamily:"Syne,sans-serif",fontWeight:"700",textAlign:"center",marginBottom:"14px"});
+    box.appendChild(inp);
+    box.appendChild(el("button",{style:{width:"100%",padding:"12px",borderRadius:"12px",border:"none",background:`linear-gradient(135deg,${C.purple},${C.cyan})`,color:"#0A0A0E",fontSize:"14px",fontWeight:"700",marginBottom:"8px"},
+      onClick:()=>{ const v=parseInt(inp.value); if(v>=10&&v<=100){ state.realAge=v; state.showAgeInput=false; try{localStorage.setItem("apex_real_age",String(v));}catch(e){} render(); } }
+    },"Confirmer"));
+    box.appendChild(el("button",{style:{width:"100%",padding:"10px",borderRadius:"12px",border:"none",background:"none",color:C.sub,fontSize:"13px"},onClick:()=>{state.showAgeInput=false;render();}},"Annuler"));
+    overlay.appendChild(box);
+    root.appendChild(overlay);
+  }
+
+  // ─── CHECK-IN ───
+  const answers = state.checkinDone ? {...state.checkinAnswers} : state.checkinCurrentAnswers;
+  const allAnswered = QUESTIONS.every(q => q.id in answers);
+  const checkinSection=el("div",{style:{background:C.card,borderRadius:"18px",padding:"16px",marginBottom:"12px"}});
+  const doneCount = QUESTIONS.filter(q=>q.id in answers).length;
+  checkinSection.appendChild(el("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"14px"}},
+    el("div",{style:{display:"flex",alignItems:"center",gap:"8px"}}, el("div",{style:{fontSize:"16px"}},"☀️"), el("div",{style:{fontSize:"13px",fontWeight:"700"}},"Check-in matin")),
+    el("div",{style:{fontSize:"10px",color:doneCount>=QUESTIONS.length?C.green:C.sub,fontWeight:"700",fontFamily:"IBM Plex Mono,monospace"}},`${doneCount}/${QUESTIONS.length}`)
+  ));
+
+  QUESTIONS.forEach(q=>{
+    const val=answers[q.id];
+    const isAnswered=val!==undefined;
+    const qRow=el("div",{style:{marginBottom:"10px"}});
+    qRow.appendChild(el("div",{style:{fontSize:"11px",color:isAnswered?C.sub:C.text,fontWeight:"600",marginBottom:"5px"}},q.emoji+" "+q.label));
+
+    if(q.type==="number"){
+      const inp=document.createElement("input");
+      inp.type="number"; inp.placeholder=q.placeholder||"0"; inp.value=val||"";
+      Object.assign(inp.style,{width:"100%",padding:"7px 10px",borderRadius:"8px",border:`1px solid ${isAnswered?C.purple:C.border}`,background:C.surface,color:C.text,fontSize:"14px",fontFamily:"inherit"});
+      inp.addEventListener("change",()=>{ const v=inp.value.trim(); if(v){ answers[q.id]=v; saveAndCheck(answers); } });
+      qRow.appendChild(inp);
+    } else if(q.type==="scale"){
+      const row=el("div",{style:{display:"flex",gap:"4px"}}); const btns=[];
+      q.scale.forEach((label,i)=>{
+        const isSelected=val===(i+1);
+        const btn=el("button",{style:{flex:"1",padding:"5px 2px",borderRadius:"7px",border:`1px solid ${isSelected?C.purple:C.border}`,background:isSelected?`${C.purple}33`:C.surface,color:isSelected?C.purple:C.sub,fontSize:"9px",fontWeight:isSelected?"700":"400",lineHeight:"1.3"},
+          onClick:()=>{ answers[q.id]=i+1; btns.forEach((b,j)=>{const sel=j===i; b.style.border=`1px solid ${sel?C.purple:C.border}`; b.style.background=sel?`${C.purple}33`:C.surface; b.style.color=sel?C.purple:C.sub; b.style.fontWeight=sel?"700":"400";}); saveAndCheck(answers); }
+        },label);
+        btns.push(btn); row.appendChild(btn);
+      });
+      qRow.appendChild(row);
+    } else if(q.type==="choice"){
+      const row=el("div",{style:{display:"flex",gap:"4px"}}); const btns=[];
+      q.choices.forEach((label,i)=>{
+        const isSelected=val===label;
+        const btn=el("button",{style:{flex:"1",padding:"5px 2px",borderRadius:"7px",border:`1px solid ${isSelected?C.cyan:C.border}`,background:isSelected?`${C.cyan}22`:C.surface,color:isSelected?C.cyan:C.sub,fontSize:"9px",fontWeight:isSelected?"700":"400"},
+          onClick:()=>{ answers[q.id]=label; btns.forEach((b,j)=>{const sel=j===i; b.style.border=`1px solid ${sel?C.cyan:C.border}`; b.style.background=sel?`${C.cyan}22`:C.surface; b.style.color=sel?C.cyan:C.sub; b.style.fontWeight=sel?"700":"400";}); saveAndCheck(answers); }
+        },label);
+        btns.push(btn); row.appendChild(btn);
+      });
+      qRow.appendChild(row);
+    } else {
+      const row=el("div",{style:{display:"flex",gap:"6px"}}); const btns=[];
+      ["Oui","Non"].forEach((label,i)=>{
+        const isSelected=val===label; const color=i===0?C.green:C.red;
+        const btn=el("button",{style:{flex:"1",padding:"6px",borderRadius:"7px",border:`1px solid ${isSelected?color:C.border}`,background:isSelected?`${color}22`:C.surface,color:isSelected?color:C.sub,fontSize:"11px",fontWeight:isSelected?"700":"400"},
+          onClick:()=>{ answers[q.id]=label; btns.forEach((b,j)=>{const c2=j===0?C.green:C.red; const sel=j===i; b.style.border=`1px solid ${sel?c2:C.border}`; b.style.background=sel?`${c2}22`:C.surface; b.style.color=sel?c2:C.sub; b.style.fontWeight=sel?"700":"400";}); saveAndCheck(answers); }
+        },(i===0?"✓ ":"✗ ")+label);
+        btns.push(btn); row.appendChild(btn);
+      });
+      qRow.appendChild(row);
+    }
+    checkinSection.appendChild(qRow);
+  });
+
+  if(!state.checkinDone && allAnswered){
+    checkinSection.appendChild(el("button",{style:{width:"100%",marginTop:"10px",padding:"12px",borderRadius:"12px",border:"none",background:`linear-gradient(135deg,${C.purple},${C.cyan})`,color:"#0A0A0E",fontSize:"14px",fontWeight:"700"},
+      onClick:()=>{
+        state.checkinAnswers={...answers}; state.checkinDone=true;
+        const k=new Date().toLocaleDateString("fr-FR");
+        try{localStorage.setItem("apex_checkin_"+k,JSON.stringify(state.checkinAnswers));}catch(e){}
+        sendCheckin(state.checkinAnswers); loadAI(); render();
+      }
+    },"✓ Enregistrer le check-in"));
+  }
+  main.appendChild(checkinSection);
+
+  // ─── ANALYSES IA ───
+  if(state.checkinDone && deduped.length>0){
+    const sections=[
+      {key:"recovery",icon:"⟳",label:"Récupération"},{key:"sleep",icon:"🌙",label:"Sommeil"},
+      {key:"training",icon:"△",label:"Entraînement"},{key:"nutrition",icon:"🥗",label:"Nutrition"},
+    ];
+    const grid=el("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px",marginBottom:"12px"}});
+    sections.forEach(s=>{
+      const data=state.aiData?(state.aiData[s.key]||{score:0,summary:"",tips:[]}):null;
+      const color=data?scoreColor(data.score):C.sub;
+      const card=el("div",{style:{background:C.card,borderRadius:"18px",padding:"16px"}});
+      card.appendChild(el("div",{style:{display:"flex",alignItems:"center",gap:"6px",marginBottom:"12px"}}, el("span",{style:{fontSize:"14px"}},s.icon), el("span",{style:{fontSize:"10px",fontWeight:"700",color,letterSpacing:"0.06em",textTransform:"uppercase"}},s.label)));
+      if(!state.aiData && state.aiLoading!==false){
+        card.appendChild(el("div",{style:{display:"flex",flexDirection:"column",alignItems:"center",gap:"8px",padding:"16px 0"}},
+          el("div",{style:{width:"14px",height:"14px",border:`2px solid ${color}`,borderTopColor:"transparent",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}),
+          el("span",{style:{fontSize:"11px",color:C.sub}},"Analyse…")));
+      } else if(state.aiLoading===false && !state.aiData){
+        card.appendChild(el("div",{style:{fontSize:"11px",color:C.sub,textAlign:"center",padding:"12px 0"}},"En attente des données"));
+      } else if(data){
+        card.appendChild(el("div",{style:{display:"flex",flexDirection:"column",alignItems:"center",marginBottom:"12px"}},
+          ringSVG(data.score||0,color,72),
+          data.summary?el("p",{style:{fontSize:"11px",color:C.sub,textAlign:"center",lineHeight:"1.4",marginTop:"6px"}},data.summary):null));
+        const tipsRow=el("div",{style:{display:"flex",flexDirection:"column",gap:"4px"}});
+        (data.tips||[]).slice(0,3).forEach(tip=>{
+          tipsRow.appendChild(el("div",{style:{borderRadius:"8px",padding:"6px 8px",fontSize:"10px",color:C.text,background:C.surface,lineHeight:"1.3"}},tip));
+        });
+        card.appendChild(tipsRow);
+      }
+      grid.appendChild(card);
+    });
+    main.appendChild(grid);
+  }
+
+  root.appendChild(main);
+}
+
+function saveAndCheck(answers){
+  const k=new Date().toLocaleDateString("fr-FR");
+  const allDone=QUESTIONS.every(q=>q.id in answers);
+  if(allDone && !state.checkinDone){
+    state.checkinAnswers={...answers}; state.checkinDone=true;
+    try{localStorage.setItem("apex_checkin_"+k,JSON.stringify(state.checkinAnswers));}catch(e){}
+    sendCheckin(state.checkinAnswers); loadAI(); render();
+  } else if(state.checkinDone){
+    state.checkinAnswers={...answers};
+    try{localStorage.setItem("apex_checkin_"+k,JSON.stringify(state.checkinAnswers));}catch(e){}
+    try{localStorage.removeItem("apex_ai_"+new Date().toISOString().slice(0,10));}catch(e){}
+  }
+}
+
+function loadAI(){
+  if(!state.checkinDone) return;
+  if(!AI_ENABLED){ state.aiData=null; state.aiLoading=false; render(); return; }
+  const today=new Date().toISOString().slice(0,10);
+  const cacheKey="apex_ai_"+today;
+  try{const c=localStorage.getItem(cacheKey);if(c){state.aiData=JSON.parse(c);state.aiLoading=false;render();return;}}catch(e){}
+  state.aiData=null; state.aiLoading=true;
+  const deduped = dedupeByDay(state.watchData);
+  const week = deduped.slice(-7);
+  const todayRow = deduped[deduped.length-1]||{};
+  getAllAIAdvice(todayRow,state.checkinAnswers,week).then(data=>{
+    state.aiData=data; state.aiLoading=false;
+    try{if(data)localStorage.setItem(cacheKey,JSON.stringify(data));}catch(e){}
+    render();
+  });
+}
+
+fetchAllData().then(({watch,checkin})=>{
+  state.watchData=watch; state.checkinData=checkin;
+  const todayKey=new Date().toLocaleDateString("fr-FR");
+  const todayISO=new Date().toISOString().slice(0,10);
+  try{const a=localStorage.getItem("apex_real_age");if(a)state.realAge=parseInt(a);}catch(e){}
+  try{const c=localStorage.getItem("apex_checkin_"+todayKey);if(c){state.checkinDone=true;state.checkinAnswers=JSON.parse(c);}}catch(e){}
+  if(!state.checkinDone){
+    const tc=checkin.filter(r=>{const d=String(r.date||r.Date||"");return d===todayKey||d.startsWith(todayISO);});
+    const t=tc[tc.length-1];
+    if(t){state.checkinDone=true;state.checkinAnswers=t;try{localStorage.setItem("apex_checkin_"+todayKey,JSON.stringify(t));}catch(e){}}
+  }
+  state.loading=false;
+  render();
+  if(state.checkinDone) loadAI();
+});
+</script>
+</body>
+</html>
